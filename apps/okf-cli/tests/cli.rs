@@ -554,3 +554,104 @@ fn cache_failure_does_not_override_complete_validation_findings() {
     assert_eq!(output.status.code(), Some(7));
     assert_eq!(value(&output)["status"], "partial");
 }
+
+#[test]
+fn metadata_warnings_are_consistent_and_do_not_reduce_coverage() {
+    let f = Fixture::new();
+    f.bind();
+    let raw = "---\ntype: Future Concept\ntitle: Warning fixture\nverified: {by: 'human:reviewer', at: 'no timezone'}\nsources: [{id: scope, resource: 'all queries in project X', usage_count: -2}]\nstale_after: '2026-10-22'\nx-custom: {nested: [a, b]}\n---\nExact original body.\n";
+    fs::write(f.work.path().join("knowledge/warning.md"), raw).unwrap();
+    let mut expected = None;
+    for args in [
+        vec!["read", "@book/warning"],
+        vec!["browse", "@book"],
+        vec!["search", "Warning fixture"],
+        vec!["context", "--query", "Warning fixture"],
+        vec!["validate", "book"],
+    ] {
+        let output = f.run(&args);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let response = value(&output);
+        assert_eq!(response["status"], "ok");
+        assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+        let warnings = response["diagnostics"].as_array().unwrap();
+        assert_eq!(warnings.len(), 3);
+        for warning in warnings {
+            assert_eq!(warning["severity"], "warning");
+            assert_eq!(warning["path"], "@book/warning.md");
+            assert!(warning["field"].as_str().unwrap().starts_with('/'));
+        }
+        if let Some(expected) = &expected {
+            assert_eq!(warnings, expected, "{args:?}");
+        } else {
+            expected = Some(warnings.clone());
+        }
+        if args[0] == "read" {
+            assert_eq!(response["data"]["document"]["text"], raw);
+            assert_eq!(response["data"]["card"]["expiry"], "unknown");
+        }
+        if args[0] == "validate" {
+            assert_eq!(response["data"]["warnings"], 3);
+            assert_eq!(response["data"]["failures"], 0);
+        }
+    }
+}
+
+#[test]
+fn metadata_warnings_coexist_with_structural_errors_and_partial_scans() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(
+        f.work.path().join("knowledge/warning.md"),
+        "---\ntype: Note\nstatus: experimental\n---\nbody\n",
+    )
+    .unwrap();
+    fs::write(
+        f.work.path().join("knowledge/bad.md"),
+        "# missing frontmatter",
+    )
+    .unwrap();
+    let output = f.run(&["validate", "book"]);
+    assert_eq!(output.status.code(), Some(1));
+    let response = value(&output);
+    assert_eq!(response["data"]["failures"], 1);
+    assert_eq!(response["data"]["warnings"], 1);
+    assert!(
+        response["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|diagnostic| diagnostic["code"] == "INVALID_OKF"
+                && diagnostic["severity"] == "error")
+    );
+    let output = f.run(&["search", "not found", "--max-scan", "1"]);
+    assert_eq!(output.status.code(), Some(7));
+    let response = value(&output);
+    assert_eq!(response["bundles"][0]["coverage"]["metadata"], "partial");
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|diagnostic| diagnostic["code"] == "SCAN_LIMIT" && diagnostic["severity"] == "error"));
+}
+
+#[test]
+fn minimal_concepts_and_unknown_extensions_remain_consumable() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(f.work.path().join("knowledge/minimal.md"), "---\ntype: User Defined Type\nx-extra: {anything: [1, 2]}\n---\n[future link](/not-created.md)\n").unwrap();
+    for args in [
+        vec!["read", "@book/minimal"],
+        vec!["search", "minimal"],
+        vec!["validate", "book"],
+    ] {
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(0));
+        assert!(value(&output)["diagnostics"].as_array().unwrap().is_empty());
+    }
+}

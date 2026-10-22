@@ -47,6 +47,8 @@
 
 普通概念的 frontmatter 必须包含非空字符串 `type`。`read --raw` 可查看不合规 Markdown，并附解析诊断；无效 UTF-8 和大小限制仍会阻止读取。`validate` 还检查根索引 frontmatter 的允许字段、子目录索引限制及日志日期标题。
 
+各读取命令共用 [OKF 检查矩阵](okf-validation.md)。可选元数据存在形状或取值问题时返回警告，仍保留概念与原文；缺少可选字段、未知类型或扩展字段不触发警告。
+
 `read` 在 `data.document` 中返回 `bundle_id`、`path`、`concept_id`、`content_sha256`、`byte_start`、`byte_end`、`total_bytes` 和 `text`。字节范围为完整原始文件中的半开区间，包括 BOM、frontmatter 和换行。拼接同一修订的分页 `text` 可以还原文件。
 
 ## 预算与分页
@@ -82,7 +84,7 @@
 
 查询按空白拆词，忽略大小写，并要求所有词都在卡片的检索字段中出现。支持中文子串，结果按知识包引用排序。`context --query` 复用元数据检索，返回 `disclosure: metadata_candidates` 与 `read` 入口。
 
-卡片中的 `trust`、`status` 和 `expiry` 从元数据派生。缺少状态时使用 `stable`；审核层级为 `unverified`、`machine-confirmed` 或 `human-reviewed`；过期状态为 `unspecified`、`current`、`expired` 或 `unknown`。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
+卡片中的 `trust`、`status` 和 `expiry` 从元数据派生。审核层级为 `unverified`、`machine-confirmed` 或 `human-reviewed`；过期状态为 `unspecified`、`current`、`expired` 或 `unknown`。默认值与异常值的处理见 [派生与覆盖](okf-validation.md#派生与覆盖)。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
 
 ## 故障与覆盖
 
@@ -106,12 +108,14 @@
 | `bundles` | 知识包读取观测、时间、视图及覆盖范围 |
 | `page` | `returned`、`total`、`has_more` 和 `next_cursor` |
 | `budget` | 操作对应的内容或扫描量统计 |
-| `diagnostics` | 诊断 code、message 和可选 path |
+| `diagnostics` | 诊断 code、severity、message、path 和 field |
 | `next` | 建议的后续操作、目标和可选 cursor |
 
 读取视图为 `observed`，上游修订为 null。`metadata` 覆盖状态必须结合 `coverage.scope` 解读：单文件、单目录与全知识包扫描不是同一范围。`body`、`graph` 是保守的覆盖声明，不能解释成离线正文或关系图已经建立。
 
 `page.total` 可以为 null；`has_more=false` 只说明该操作没有续页，不证明全库扫描完整。卡片返回也不意味着 Agent 已读取正文。
+
+`diagnostics[].severity` 为 `error` 或 `warning`。元数据警告的 `path` 为完整文件引用，如 `@handbook/services/auth.md`；`field` 为 frontmatter 的 JSON Pointer，如 `/verified/0/at`。操作或文档级诊断的 `field` 为 null，包括诊断截断提示。警告不改变执行状态或读取覆盖；仍应结合 `status`、退出码和覆盖范围判断结果。单个概念的诊断数量限制见 [检查矩阵](okf-validation.md#派生与覆盖)。
 
 ## 退出码
 
@@ -127,5 +131,7 @@
 | 7 | 部分结果、资源超限、截止时间或取消 |
 
 完整合规检查发现错误时为 `status: error`、退出码 1，缓存不可用诊断不会覆盖这个结果；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。文件过大和输出超限也使用退出码 7，但响应为 `error`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
+
+`validate` 返回 `data.failures` 与 `data.warnings`，分别统计失败文件与返回的元数据警告。只有警告且扫描完成时仍为 `ok`、退出码 0。
 
 Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际读取的文件、字节范围和内容哈希，并保留影响答案的过期、审核和覆盖限定。消费流程见 [消费 Skill](../skills/okf-consume/SKILL.md)。
