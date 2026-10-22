@@ -3,19 +3,30 @@ use crate::{
     RequestControl, Response, ScanBudget,
 };
 use chrono::{DateTime, Utc};
+use okf_core::markdown::{
+    body_truncation_warning, body_warning, BodyLink, LinkTarget, Markdown, MAX_BODY_WARNINGS,
+};
 use okf_core::{
     decode_cursor, encode_cursor, logical_path, prefix_end, reserved, sha256, validate_reserved,
     Card, Diagnostic, Document, Error, Result, Severity,
 };
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 const MAX_DOCUMENT: usize = 2 * 1024 * 1024;
+const MAX_VALIDATION_LINKS: usize = 4096;
+const MAX_VALIDATION_LINK_BYTES: usize = 2 * 1024 * 1024;
 
 struct CardObservation {
     value: Value,
     diagnostics: Vec<Diagnostic>,
     cache_error: Option<Error>,
+}
+
+#[derive(Default)]
+struct BodyWarningState {
+    count: usize,
+    truncated: bool,
 }
 
 pub struct App<'a> {
@@ -27,6 +38,36 @@ pub struct App<'a> {
 }
 
 impl App<'_> {
+    fn markdown(
+        &self,
+        binding: &BundleBinding,
+        path: &str,
+        raw: &str,
+        doc: Option<&Document>,
+    ) -> Markdown {
+        let start = doc.map_or_else(
+            || okf_core::frontmatter(raw).map_or(0, |(_, start)| start),
+            |doc| doc.body_start,
+        );
+        let mut markdown = Markdown::parse(raw, start, path, doc.map(|doc| &doc.frontmatter));
+        for diagnostic in &mut markdown.diagnostics {
+            diagnostic.path = Some(format!("@{}/{}", binding.name, path));
+        }
+        markdown
+    }
+
+    fn document_diagnostics(
+        &self,
+        binding: &BundleBinding,
+        path: &str,
+        raw: &str,
+        doc: &Document,
+    ) -> Vec<Diagnostic> {
+        let mut diagnostics = doc.diagnostics(&format!("@{}/{}", binding.name, path));
+        diagnostics.extend(self.markdown(binding, path, raw, Some(doc)).diagnostics);
+        diagnostics
+    }
+
     pub fn binding(&self, name: &str) -> Result<BundleBinding> {
         find_binding(&self.registry.list()?, name).cloned()
     }
@@ -84,7 +125,7 @@ impl App<'_> {
             .reader
             .read(binding, path, MAX_DOCUMENT, self.control)?;
         let doc = Document::parse(&raw)?;
-        let diagnostics = doc.diagnostics(&format!("@{}/{}", binding.name, path));
+        let diagnostics = self.document_diagnostics(binding, path, &raw, &doc);
         let id = path.strip_suffix(".md").unwrap_or(path);
         let card = doc.card(id, self.now);
         let hash = sha256(raw.as_bytes());
@@ -319,7 +360,7 @@ impl App<'_> {
                     let card = doc.card(concept_id, self.now);
                     response
                         .diagnostics
-                        .extend(doc.diagnostics(&format!("@{}/{}", binding.name, path)));
+                        .extend(self.document_diagnostics(&binding, &path, &raw, &doc));
                     if let Some(error) = self.remember_card(&binding, &path, &hash, &card)? {
                         response.partial("CACHE_WRITE_FAILED", &error.message);
                     }
@@ -332,6 +373,10 @@ impl App<'_> {
                 }
                 Err(e) => return Err(e),
             }
+        } else {
+            response
+                .diagnostics
+                .extend(self.markdown(&binding, &path, &raw, None).diagnostics);
         }
         let start = if let Some(token) = &options.cursor {
             let cursor: Cursor = decode_cursor(token)?;
@@ -524,10 +569,17 @@ impl App<'_> {
         let mut scan = ScanBudget::new(options.max_scan, self.control);
         let mut failures = 0;
         let mut observed = false;
+        let mut complete = true;
+        let mut existing = BTreeMap::new();
+        let mut links: Vec<(String, BodyLink)> = vec![];
+        let mut links_truncated = false;
+        let mut link_bytes = 0;
+        let mut body_warnings = BTreeMap::<String, BodyWarningState>::new();
         'scan: while let Some(directory) = queue.pop_front() {
             let listing = match self.reader.list(&binding, &directory, &mut scan) {
                 Ok(listing) => listing,
                 Err(error) if interrupted(&error) || error.code == "SCAN_LIMIT" => {
+                    complete = false;
                     response.issue(&error, &format!("@{}/{}", binding.name, directory));
                     break;
                 }
@@ -535,6 +587,7 @@ impl App<'_> {
             };
             observed = true;
             if !listing.complete {
+                complete = false;
                 response.issue(
                     &Error::new("SCAN_LIMIT", "validation scan budget reached", 7),
                     &format!("@{}/{}", binding.name, directory),
@@ -542,29 +595,74 @@ impl App<'_> {
             }
             for entry in listing.entries {
                 if let Err(error) = self.control.check() {
+                    complete = false;
                     response.issue(&error, &format!("@{}", binding.name));
                     break 'scan;
                 }
                 if entry.directory {
+                    existing.insert(entry.path.clone(), true);
                     queue.push_back(entry.path);
                     continue;
                 }
+                existing.insert(entry.path.clone(), false);
                 let result = self
                     .reader
                     .read(&binding, &entry.path, MAX_DOCUMENT, self.control)
                     .and_then(|raw| {
-                        if reserved(&entry.path) {
-                            validate_reserved(&entry.path, &raw).map(|()| vec![])
+                        let (mut diagnostics, markdown) = if reserved(&entry.path) {
+                            validate_reserved(&entry.path, &raw)?;
+                            (vec![], self.markdown(&binding, &entry.path, &raw, None))
                         } else {
-                            Document::parse(&raw).map(|doc| {
-                                doc.diagnostics(&format!("@{}/{}", binding.name, entry.path))
-                            })
+                            let doc = Document::parse(&raw)?;
+                            (
+                                doc.diagnostics(&format!("@{}/{}", binding.name, entry.path)),
+                                self.markdown(&binding, &entry.path, &raw, Some(&doc)),
+                            )
+                        };
+                        let count = markdown
+                            .diagnostics
+                            .iter()
+                            .filter(|d| d.location.is_some())
+                            .count();
+                        if count > 0 || markdown.truncated {
+                            body_warnings.insert(
+                                entry.path.clone(),
+                                BodyWarningState {
+                                    count,
+                                    truncated: markdown.truncated,
+                                },
+                            );
                         }
+                        diagnostics.extend(markdown.diagnostics);
+                        for link in markdown.links {
+                            let (path, fragment) = match &link.target {
+                                LinkTarget::Internal { path, fragment }
+                                    if link.bundle_path().is_some() =>
+                                {
+                                    (path, fragment)
+                                }
+                                _ => continue,
+                            };
+                            let bytes = entry.path.len()
+                                + link.destination.len()
+                                + path.len()
+                                + fragment.as_ref().map_or(0, String::len);
+                            if links.len() < MAX_VALIDATION_LINKS
+                                && bytes <= MAX_VALIDATION_LINK_BYTES - link_bytes
+                            {
+                                link_bytes += bytes;
+                                links.push((entry.path.clone(), link));
+                            } else {
+                                links_truncated = true;
+                            }
+                        }
+                        Ok(diagnostics)
                     });
                 match result {
                     Ok(diagnostics) => response.diagnostics.extend(diagnostics),
                     Err(e) => {
                         if interrupted(&e) {
+                            complete = false;
                             response.issue(&e, &format!("@{}/{}", binding.name, entry.path));
                             break 'scan;
                         }
@@ -584,6 +682,54 @@ impl App<'_> {
                 }
             }
         }
+        // A missing target can only be established after complete enumeration.
+        // No target reads or network requests are needed for this check.
+        let metadata_complete = complete;
+        let mut links_checked = 0;
+        if complete {
+            for (path, link) in &links {
+                if let Err(error) = self.control.check() {
+                    complete = false;
+                    response.issue(&error, &format!("@{}", binding.name));
+                    break;
+                }
+                if let Some(target) = link.bundle_path() {
+                    links_checked += 1;
+                    let exists = if target.is_empty() {
+                        link.directory
+                    } else {
+                        existing.get(target) == Some(&link.directory)
+                    };
+                    if !exists {
+                        let state = body_warnings.entry(path.clone()).or_default();
+                        if state.count < MAX_BODY_WARNINGS {
+                            state.count += 1;
+                            response.diagnostics.push(body_warning(
+                                "BROKEN_LINK",
+                                format!(
+                                    "bundle link target missing or wrong file type: {}",
+                                    link.destination
+                                ),
+                                &format!("@{}/{}", binding.name, path),
+                                link.location.clone(),
+                            ));
+                        } else if !state.truncated {
+                            state.truncated = true;
+                            response.diagnostics.push(body_truncation_warning(&format!(
+                                "@{}/{}",
+                                binding.name, path
+                            )));
+                        }
+                    }
+                }
+            }
+        }
+        if links_truncated {
+            response.partial(
+                "LINK_LIMIT",
+                "validation link count or byte limit reached; select a smaller bundle",
+            );
+        }
         response.data["failures"] = json!(failures);
         response.data["warnings"] = json!(response
             .diagnostics
@@ -591,11 +737,18 @@ impl App<'_> {
             .filter(|diagnostic| diagnostic.severity == Severity::Warning)
             .count());
         if let Err(error) = self.control.check() {
+            complete = false;
             if !response.diagnostics.iter().any(|d| d.code == error.code) {
                 response.issue(&error, &format!("@{}", binding.name));
             }
         }
-        response.budget = json!({"scan_limit": options.max_scan, "scanned_entries": scan.used()});
+        response.budget = json!({"scan_limit": options.max_scan, "scanned_entries": scan.used(),
+            "link_limit": MAX_VALIDATION_LINKS, "links_checked": links_checked,
+            "link_bytes_limit": MAX_VALIDATION_LINK_BYTES, "link_bytes_used": link_bytes});
+        response.data["link_check"] = json!({
+            "scope": "bundle_markdown_targets",
+            "complete": complete && failures == 0 && !links_truncated && !body_warnings.values().any(|state| state.truncated)
+        });
         if failures > 0 && response.exit_code == 0 {
             response.status = "error".into();
             response.exit_code = 1;
@@ -605,7 +758,7 @@ impl App<'_> {
                 &binding,
                 self.now,
                 "",
-                if response.exit_code == 7 {
+                if !metadata_complete {
                     "partial"
                 } else {
                     "complete"

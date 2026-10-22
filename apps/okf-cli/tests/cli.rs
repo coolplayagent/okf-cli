@@ -652,6 +652,196 @@ fn minimal_concepts_and_unknown_extensions_remain_consumable() {
     ] {
         let output = f.run(&args);
         assert_eq!(output.status.code(), Some(0));
-        assert!(value(&output)["diagnostics"].as_array().unwrap().is_empty());
+        let response = value(&output);
+        let diagnostics = response["diagnostics"].as_array().unwrap();
+        if args[0] == "validate" {
+            assert_eq!(diagnostics.len(), 1);
+            assert_eq!(diagnostics[0]["code"], "BROKEN_LINK");
+            assert_eq!(diagnostics[0]["severity"], "warning");
+        } else {
+            assert!(diagnostics.is_empty());
+        }
+    }
+}
+
+#[test]
+fn body_diagnostics_preserve_bytes_and_are_consistent_across_consumption_commands() {
+    let f = Fixture::new();
+    f.bind();
+    let raw = "\u{feff}---\r\ntype: Note\r\nsources: [{id: known, resource: scope}]\r\n---\r\n中文.[^known] Missing.[^missing]\r\n\r\n[^known]: Source\r\n\r\n[escape](../../outside.md) [future](future.md#part)\r\n`[^code]`\r\n";
+    fs::write(f.work.path().join("knowledge/services/note.md"), raw).unwrap();
+    let mut expected = None;
+    for args in [
+        vec!["read", "@book/services/note"],
+        vec!["browse", "@book/services"],
+        vec!["search", "note"],
+        vec!["context", "--query", "note"],
+    ] {
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(0));
+        let response = value(&output);
+        let diagnostics = &response["diagnostics"];
+        assert_eq!(diagnostics.as_array().unwrap().len(), 3);
+        if let Some(expected) = &expected {
+            assert_eq!(diagnostics, expected);
+        } else {
+            expected = Some(diagnostics.clone());
+        }
+        for diagnostic in diagnostics.as_array().unwrap() {
+            assert_eq!(diagnostic["path"], "@book/services/note.md");
+            assert_eq!(diagnostic["severity"], "warning");
+            assert!(diagnostic["field"].is_null());
+            let start = diagnostic["location"]["byte_start"].as_u64().unwrap() as usize;
+            let end = diagnostic["location"]["byte_end"].as_u64().unwrap() as usize;
+            assert!(matches!(
+                &raw[start..end],
+                "[^missing]" | "[escape](../../outside.md)"
+            ));
+        }
+        if args[0] == "read" {
+            assert_eq!(response["data"]["document"]["text"], raw);
+        }
+    }
+    let output = f.run(&["validate", "book"]);
+    assert_eq!(output.status.code(), Some(0));
+    let response = value(&output);
+    assert_eq!(response["data"]["warnings"], 4);
+    assert_eq!(response["data"]["failures"], 0);
+    assert_eq!(response["data"]["link_check"]["complete"], true);
+    assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "BROKEN_LINK"));
+    assert_eq!(
+        fs::read(f.work.path().join("knowledge/services/note.md")).unwrap(),
+        raw.as_bytes()
+    );
+}
+
+#[test]
+fn validation_checks_authored_indexes_and_does_not_infer_missing_targets_from_partial_scans() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(f.work.path().join("knowledge/index.md"), "# Index\n[missing](missing.md) [valid][ref] [dir](services/#part)\n\n[ref]: services/auth.md#heading\n").unwrap();
+    let complete = f.run(&["validate", "book"]);
+    assert_eq!(complete.status.code(), Some(0));
+    let response = value(&complete);
+    assert_eq!(response["data"]["warnings"], 1);
+    assert_eq!(response["diagnostics"][0]["path"], "@book/index.md");
+    assert_eq!(response["diagnostics"][0]["code"], "BROKEN_LINK");
+    let partial = f.run(&["validate", "book", "--max-scan", "4"]);
+    assert_eq!(partial.status.code(), Some(7));
+    let response = value(&partial);
+    assert_eq!(response["data"]["link_check"]["complete"], false);
+    assert_eq!(response["budget"]["links_checked"], 0);
+    assert!(!response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "BROKEN_LINK"));
+}
+
+#[test]
+fn validation_link_limit_does_not_downgrade_completed_metadata_coverage() {
+    let f = Fixture::new();
+    f.bind();
+    let raw = format!(
+        "---\ntype: Note\n---\n{}",
+        "[link](/services/auth.md) ".repeat(256)
+    );
+    for index in 0..17 {
+        fs::write(
+            f.work.path().join(format!("knowledge/note-{index}.md")),
+            &raw,
+        )
+        .unwrap();
+    }
+    let output = f.run(&["validate", "book"]);
+    assert_eq!(output.status.code(), Some(7));
+    let response = value(&output);
+    assert_eq!(response["budget"]["links_checked"], 4096);
+    assert_eq!(response["data"]["link_check"]["complete"], false);
+    assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+    assert_eq!(response["diagnostics"][0]["code"], "LINK_LIMIT");
+}
+
+#[test]
+fn validation_bounds_pending_link_bytes_independently_of_link_count() {
+    let f = Fixture::new();
+    f.bind();
+    let raw = format!(
+        "---\ntype: Note\n---\n[link](/services/auth.md#{})",
+        "a".repeat(600_000)
+    );
+    for index in 0..2 {
+        fs::write(
+            f.work.path().join(format!("knowledge/note-{index}.md")),
+            &raw,
+        )
+        .unwrap();
+    }
+    let output = f.run(&["validate", "book"]);
+    assert_eq!(output.status.code(), Some(7));
+    let response = value(&output);
+    assert!(response["budget"]["link_bytes_used"].as_u64().unwrap() <= 2 * 1024 * 1024);
+    assert!(response["budget"]["links_checked"].as_u64().unwrap() < 4096);
+    assert_eq!(response["data"]["link_check"]["complete"], false);
+    assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+    assert_eq!(response["diagnostics"][0]["code"], "LINK_LIMIT");
+}
+
+#[test]
+fn validation_checks_encoded_directories_and_distinguishes_files_from_directories() {
+    let f = Fixture::new();
+    f.bind();
+    fs::create_dir(f.work.path().join("knowledge/folder.md")).unwrap();
+    fs::write(f.work.path().join("knowledge/links.md"), "---\ntype: Note\n---\n[missing](gone%2F?q=1#part) [file](/folder.md) [directory](/services/auth.md/) [valid](/folder.md%2F) [dot](/folder.md/.)\n").unwrap();
+    let output = f.run(&["validate", "book"]);
+    assert_eq!(output.status.code(), Some(0));
+    let response = value(&output);
+    assert_eq!(response["data"]["warnings"], 3);
+    assert_eq!(response["data"]["link_check"]["complete"], true);
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|d| d["code"] == "BROKEN_LINK" && d["severity"] == "warning"));
+}
+
+#[test]
+fn broken_link_findings_share_the_per_file_body_warning_limit() {
+    let f = Fixture::new();
+    f.bind();
+    for (footnotes, broken) in [(0, 64), (10, 44), (40, 0)] {
+        let raw = format!(
+            "---\ntype: Note\n---\n{}\n\n{}",
+            "[^unknown] ".repeat(footnotes),
+            "[missing](/missing.md) ".repeat(100)
+        );
+        fs::write(f.work.path().join("knowledge/links.md"), raw).unwrap();
+        let output = f.run(&["validate", "book"]);
+        assert_eq!(output.status.code(), Some(0));
+        let response = value(&output);
+        let diagnostics = response["diagnostics"].as_array().unwrap();
+        assert_eq!(diagnostics.len(), 65);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d["code"] == "BROKEN_LINK")
+                .count(),
+            broken
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d["code"] == "BODY_DIAGNOSTICS_TRUNCATED")
+                .count(),
+            1
+        );
+        assert_eq!(response["data"]["warnings"], 65);
+        assert_eq!(response["data"]["link_check"]["complete"], false);
+        assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
     }
 }

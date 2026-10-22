@@ -27,7 +27,7 @@ okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元
 
 | 模块 | 职责 |
 | --- | --- |
-| `crates/okf-core` | 逻辑路径、YAML frontmatter、元数据诊断、保留文件检查、概念卡片、生命周期、SHA-256、UTF-8 字节分页和 cursor 编解码 |
+| `crates/okf-core` | 逻辑路径、YAML frontmatter、Markdown 链接与脚注、元数据诊断、保留文件检查、概念卡片、生命周期、SHA-256、UTF-8 字节分页和 cursor 编解码 |
 | `crates/okf-application` | 知识包选择、概览、浏览、原文读取、元数据搜索和合规检查；定义 `BundleRegistry`、`BundleReader`、`Cache` 端口 |
 | `crates/okf-adapters` | 文件系统读取、TOML 配置和 SQLite 元数据缓存 |
 | `apps/okf-cli` | 参数校验、依赖组装、取消信号、JSON 输出、输出上限和退出码 |
@@ -69,6 +69,8 @@ flowchart TD
 概念 ID 为包内路径去掉末尾一个 `.md`；引用格式为 `@别名/路径`。逻辑路径统一使用 `/`，允许 Unicode 和空格，拒绝绝对路径、反斜杠、盘符及 `.`、`..` 路径段。`index.md` 和 `log.md` 是保留资源，不作为普通概念卡片。
 
 `Document::parse` 检查概念结构，`Document::diagnostics` 返回带字段定位的元数据警告，`Document::card` 派生卡片。时间解析和 Actor 规则由诊断与卡片派生共用，具体规则见 [检查矩阵](okf-validation.md)。应用层提供完整文件引用，将元数据警告与读取故障分别汇入响应，并复用缓存写入流程记录卡片观测。
+
+`Markdown` 使用解析器事件提取正文链接和脚注，保留完整原文件的字节位置。正文路径解析同时确定包内路径与目录导航形式，与 CLI 引用校验分开。应用层复用正文诊断，`validate` 在完整列举后比对目标路径及文件类型，不额外读取目标或访问网络。每份文件的正文警告计数与截断状态统一维护，链接检查完整性与元数据覆盖分别报告。
 
 ## 配置与缓存
 

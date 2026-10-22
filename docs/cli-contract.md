@@ -47,7 +47,7 @@
 
 普通概念的 frontmatter 必须包含非空字符串 `type`。`read --raw` 可查看不合规 Markdown，并附解析诊断；无效 UTF-8 和大小限制仍会阻止读取。`validate` 还检查根索引 frontmatter 的允许字段、子目录索引限制及日志日期标题。
 
-各读取命令共用 [OKF 检查矩阵](okf-validation.md)。可选元数据存在形状或取值问题时返回警告，仍保留概念与原文；缺少可选字段、未知类型或扩展字段不触发警告。
+结构、元数据与正文诊断规则见 [OKF 检查矩阵](okf-validation.md)。质量警告保留概念与原文；缺少可选字段、未知类型或扩展字段不触发警告。
 
 `read` 在 `data.document` 中返回 `bundle_id`、`path`、`concept_id`、`content_sha256`、`byte_start`、`byte_end`、`total_bytes` 和 `text`。字节范围为完整原始文件中的半开区间，包括 BOM、frontmatter 和换行。拼接同一修订的分页 `text` 可以还原文件。
 
@@ -94,6 +94,10 @@
 
 缓存问题与知识文件覆盖分别表达，完整校验发现的文档错误优先于缓存诊断。`SCAN_LIMIT` 仅用于扫描预算耗尽，文件故障或取消不会被标为预算不足。
 
+`validate` 返回 `data.link_check`，其中 `scope` 为 `bundle_markdown_targets`，`complete` 为布尔值。它说明包内 Markdown 链接与目录目标检查是否完成；扫描未完成时跳过目标存在性判断，读取失败、链接预算耗尽、正文收集或警告截断，以及取消都会使其为 false。它不表示目标全部有效或关系图已建立，检查范围见 [正文链接与来源脚注](okf-validation.md#正文链接与来源脚注)。
+
+`budget.link_limit` 与 `link_bytes_limit` 给出待检查链接的数量、字符串字节上限；`links_checked` 是实际检查的链接数，`link_bytes_used` 是保留链接占用的字符串字节数。`LINK_LIMIT` 返回退出码 7，链接阶段取消或预算耗尽均保留已完成的元数据覆盖。具体上限见 [诊断上限](okf-validation.md#诊断上限)。
+
 ## JSON 响应
 
 完整结构由 [响应 Schema](../schemas/response.schema.json) 定义。
@@ -108,14 +112,16 @@
 | `bundles` | 知识包读取观测、时间、视图及覆盖范围 |
 | `page` | `returned`、`total`、`has_more` 和 `next_cursor` |
 | `budget` | 操作对应的内容或扫描量统计 |
-| `diagnostics` | 诊断 code、severity、message、path 和 field |
+| `diagnostics` | 诊断 code、severity、message、path、field 和可选 location |
 | `next` | 建议的后续操作、目标和可选 cursor |
 
 读取视图为 `observed`，上游修订为 null。`metadata` 覆盖状态必须结合 `coverage.scope` 解读：单文件、单目录与全知识包扫描不是同一范围。`body`、`graph` 是保守的覆盖声明，不能解释成离线正文或关系图已经建立。
 
 `page.total` 可以为 null；`has_more=false` 只说明该操作没有续页，不证明全库扫描完整。卡片返回也不意味着 Agent 已读取正文。
 
-`diagnostics[].severity` 为 `error` 或 `warning`。元数据警告的 `path` 为完整文件引用，如 `@handbook/services/auth.md`；`field` 为 frontmatter 的 JSON Pointer，如 `/verified/0/at`。操作或文档级诊断的 `field` 为 null，包括诊断截断提示。警告不改变执行状态或读取覆盖；仍应结合 `status`、退出码和覆盖范围判断结果。单个概念的诊断数量限制见 [检查矩阵](okf-validation.md#派生与覆盖)。
+`diagnostics[].severity` 为 `error` 或 `warning`。元数据及正文警告的 `path` 为完整文件引用，如 `@handbook/services/auth.md`；元数据的 `field` 为 frontmatter 的 JSON Pointer，如 `/verified/0/at`。正文、操作或文档级诊断的 `field` 为 null，包括截断提示。警告不改变执行状态或元数据覆盖；仍应结合 `status`、退出码与检查完整性判断结果。诊断条数规则见 [诊断上限](okf-validation.md#诊断上限)。
+
+正文诊断通过可选的 `location: {byte_start, byte_end}` 标识完整原文件中的 UTF-8 字节半开区间，包含 BOM、frontmatter 与换行所占字节；它不相对于当前读取分页。没有具体正文位置的诊断省略此字段。
 
 ## 退出码
 
@@ -132,6 +138,6 @@
 
 完整合规检查发现错误时为 `status: error`、退出码 1，缓存不可用诊断不会覆盖这个结果；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。文件过大和输出超限也使用退出码 7，但响应为 `error`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
 
-`validate` 返回 `data.failures` 与 `data.warnings`，分别统计失败文件与返回的元数据警告。只有警告且扫描完成时仍为 `ok`、退出码 0。
+`validate` 返回 `data.failures` 与 `data.warnings`，分别统计失败文件与返回的元数据及正文警告。只有警告且扫描完成时仍为 `ok`、退出码 0。
 
 Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际读取的文件、字节范围和内容哈希，并保留影响答案的过期、审核和覆盖限定。消费流程见 [消费 Skill](../skills/okf-consume/SKILL.md)。

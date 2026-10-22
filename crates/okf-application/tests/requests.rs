@@ -260,3 +260,55 @@ fn cancellation_during_last_cache_write_is_reported() {
         assert_eq!(response.bundles[0]["coverage"]["metadata"], "partial");
     }
 }
+
+#[test]
+fn cancellation_before_link_checks_preserves_completed_metadata_coverage() {
+    struct LateCancelReader(Reader);
+    impl BundleReader for LateCancelReader {
+        fn probe(&self, binding: &BundleBinding) -> Result<()> {
+            self.0.probe(binding)
+        }
+        fn list(
+            &self,
+            binding: &BundleBinding,
+            directory: &str,
+            budget: &mut ScanBudget<'_>,
+        ) -> Result<Listing> {
+            self.0.list(binding, directory, budget)
+        }
+        fn read(
+            &self,
+            binding: &BundleBinding,
+            path: &str,
+            max_bytes: usize,
+            control: &RequestControl,
+        ) -> Result<String> {
+            let raw = self.0.read(binding, path, max_bytes, control)?;
+            if path == "second.md" {
+                self.0.cancelled.store(true, Ordering::Relaxed);
+            }
+            Ok(raw.replace("body", "[target](first.md)"))
+        }
+    }
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let control = RequestControl::new(Duration::from_secs(30), cancelled.clone());
+    let reader = LateCancelReader(Reader {
+        cancelled,
+        calls: AtomicUsize::new(0),
+        stop_on_second: false,
+    });
+    let app = App {
+        registry: &Registry,
+        reader: &reader,
+        cache: &ObservationCache { fail: false },
+        now: Utc::now(),
+        control: &control,
+    };
+    let response = app.validate("book", &options()).unwrap();
+    assert_eq!(response.exit_code, 7);
+    assert_eq!(response.data["checked"], 2);
+    assert_eq!(response.data["link_check"]["complete"], false);
+    assert_eq!(response.bundles[0]["coverage"]["metadata"], "complete");
+    assert_eq!(response.diagnostics.len(), 1);
+    assert_eq!(response.diagnostics[0].code, "CANCELLED");
+}
