@@ -369,3 +369,188 @@ fn unsupported_command_and_configuration_names_are_rejected() {
     assert_eq!(output.status.code(), Some(2));
     assert_eq!(value(&output)["data"]["error"]["code"], "INVALID_CONFIG");
 }
+
+#[test]
+fn commands_reject_options_that_do_not_apply() {
+    let f = Fixture::new();
+    for args in [
+        vec!["read", "@book/note", "--limit", "1"],
+        vec!["read", "@book/note", "--max-scan", "1"],
+        vec!["validate", "book", "--limit", "1"],
+        vec!["validate", "book", "--budget-bytes", "1024"],
+        vec!["validate", "book", "--cursor", "token"],
+        vec!["context", "--cursor", "token"],
+        vec!["context", "--max-scan", "1"],
+        vec!["context", "--query", "auth", "--cursor", "token"],
+        vec!["search", "auth", "--cursor", "token"],
+        vec!["bundle", "list", "--timeout-ms", "1"],
+        vec!["browse", "@book", "--timeout-ms", "0"],
+        vec!["read", "@book/note", "--timeout-ms", "3600001"],
+    ] {
+        let out = f.run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(2),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(value(&out)["data"]["error"]["code"], "INVALID_ARGUMENT");
+    }
+    f.bind();
+    assert_eq!(
+        f.run(&[
+            "context",
+            "--query",
+            "auth",
+            "--max-scan",
+            "100",
+            "--timeout-ms",
+            "30000"
+        ])
+        .status
+        .code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn incomplete_directory_does_not_issue_or_validate_a_cursor() {
+    let f = Fixture::new();
+    f.bind();
+    let full = value(&f.run(&["browse", "@book/services", "--limit", "1"]));
+    let cursor = full["page"]["next_cursor"].as_str().unwrap();
+    let out = f.run(&["browse", "@book/services", "--max-scan", "2"]);
+    assert_eq!(out.status.code(), Some(7));
+    let partial = value(&out);
+    assert_eq!(partial["budget"]["scanned_entries"], 2);
+    assert!(partial["page"]["next_cursor"].is_null());
+    assert_eq!(partial["page"]["has_more"], false);
+    assert_eq!(partial["bundles"][0]["coverage"]["metadata"], "partial");
+    let out = f.run(&[
+        "browse",
+        "@book/services",
+        "--max-scan",
+        "2",
+        "--cursor",
+        cursor,
+    ]);
+    assert_eq!(out.status.code(), Some(7));
+    assert_eq!(value(&out)["data"]["error"]["code"], "SCAN_LIMIT");
+    assert_eq!(
+        f.run(&["browse", "@book/services", "--cursor", cursor])
+            .status
+            .code(),
+        Some(0)
+    );
+}
+
+#[test]
+fn multi_bundle_search_keeps_results_when_files_or_roots_fail() {
+    let f = Fixture::new();
+    f.bind();
+    fs::create_dir(f.work.path().join("broken")).unwrap();
+    fs::write(
+        f.work.path().join("broken/large.md"),
+        "x".repeat(2 * 1024 * 1024 + 1),
+    )
+    .unwrap();
+    assert_eq!(
+        f.run(&["bundle", "add", "broken", "--path", "broken"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let out = f.run(&["search", "登录"]);
+    assert_eq!(out.status.code(), Some(7));
+    let response = value(&out);
+    assert_eq!(response["data"]["items"][0]["title"], "登录服务");
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "DOCUMENT_TOO_LARGE" && d["path"] == "@broken/large.md"));
+    assert!(!response.to_string().contains("INDEX_PARTIAL"));
+    fs::remove_dir_all(f.work.path().join("broken")).unwrap();
+    for command in [
+        vec!["context"],
+        vec!["search", "登录"],
+        vec!["context", "--query", "登录"],
+    ] {
+        let out = f.run(&command);
+        assert_eq!(out.status.code(), Some(7));
+        let response = value(&out);
+        assert_eq!(response["data"]["items"].as_array().unwrap().len(), 1);
+        let failed = response["bundles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|b| b["alias"] == "broken")
+            .unwrap();
+        assert_eq!(failed["freshness"], "unknown");
+        assert_eq!(failed["coverage"]["metadata"], "unknown");
+        assert!(failed["checked_at"].is_null());
+    }
+    assert_eq!(
+        f.run(&["search", "登录", "--bundle", "broken"])
+            .status
+            .code(),
+        Some(3)
+    );
+}
+
+#[test]
+fn corrupt_cache_preserves_read_search_and_browse_results() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(f.home.path().join("index.sqlite"), "not a SQLite database").unwrap();
+    for args in [
+        vec!["read", "@book/services/auth"],
+        vec!["browse", "@book/services"],
+        vec!["search", "登录"],
+    ] {
+        let out = f.run(&args);
+        assert_eq!(out.status.code(), Some(7));
+        let response = value(&out);
+        assert_eq!(response["status"], "partial");
+        assert!(response["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "CACHE_WRITE_FAILED"));
+        if args[0] == "read" {
+            assert!(response["data"]["document"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("每秒"));
+        } else {
+            assert!(!response["data"]["items"].as_array().unwrap().is_empty());
+        }
+    }
+    assert_eq!(f.run(&["doctor"]).status.code(), Some(5));
+}
+
+#[test]
+fn cache_failure_does_not_override_complete_validation_findings() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(
+        f.work.path().join("knowledge/services/bad.md"),
+        "# no frontmatter",
+    )
+    .unwrap();
+    fs::write(f.home.path().join("index.sqlite"), "corrupt cache").unwrap();
+    let output = f.run(&["validate", "book"]);
+    assert_eq!(output.status.code(), Some(1));
+    let response = value(&output);
+    assert_eq!(response["status"], "error");
+    assert_eq!(response["data"]["failures"], 1);
+    assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "CACHE_UNAVAILABLE"));
+    let output = f.run(&["validate", "book", "--max-scan", "1"]);
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(value(&output)["status"], "partial");
+}

@@ -57,7 +57,7 @@ okf validate handbook --format json
 okf status handbook --format json
 ```
 
-使用 `--format json` 获取机器可读结果。响应包含知识包、覆盖范围、诊断和后续操作；分页时将 `page.next_cursor` 传入同一命令的 `--cursor` 参数继续读取。参数说明可通过 `okf --help` 或 `okf <命令> --help` 查看。
+使用 `--format json` 获取机器可读结果。目录和原文分页时，将 `page.next_cursor` 传入同一命令的 `--cursor` 参数继续读取。可通过 `okf <命令> --help` 查看选项，通过 [CLI 参考](docs/cli-contract.md) 了解预算、诊断和覆盖范围。
 
 ## 配置
 

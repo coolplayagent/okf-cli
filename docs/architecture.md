@@ -17,9 +17,9 @@ okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元
 | Actor / Trust tier | 生产或核验者标识，以及根据 `verified` 派生的审核层级 |
 | `index.md` / `log.md` | 目录索引与更新历史；它们是保留文件，不是 Concept |
 
-`status`、`stale_after`、`generated`、`verified` 等字段保持规范中的含义，不用工具状态覆盖它们。概念间寻址遵循知识包内的文件路径，不另外生成概念 UUID。
+`status`、`stale_after`、`generated`、`verified` 等字段保持规范中的含义。工具执行状态放在响应 envelope 中，与概念元数据分开。
 
-`BundleBinding`、别名、配置作用域、存储适配器、卡片摘要、读取预算、cursor 和缓存是消费工具的扩展。`handbook` 是知识包绑定的本地别名，不是 OKF 类型或 frontmatter 字段；`@handbook/services/auth` 将这个别名与规范的 Concept ID 组合为 CLI 引用。文件系统、Git、对象存储等描述知识包的存储位置，不使用 OKF 的 Source 概念命名。
+`BundleBinding`、别名、配置作用域、存储适配器、卡片摘要、读取预算、cursor 和缓存是消费工具的扩展。`@handbook/services/auth` 由本地绑定别名 `handbook` 与 Concept ID `services/auth` 组成。存储适配器描述知识包的存储位置；OKF Source 保持依据材料的含义。
 
 ## 模块与依赖
 
@@ -30,7 +30,7 @@ okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元
 | `crates/okf-core` | 逻辑路径校验、YAML frontmatter、概念卡片、生命周期、SHA-256、UTF-8 字节分页和 cursor 编解码 |
 | `crates/okf-application` | 知识包选择、概览、浏览、原文读取、元数据搜索和合规检查；定义 `BundleRegistry`、`BundleReader`、`Cache` 端口 |
 | `crates/okf-adapters` | 文件系统读取、TOML 配置和 SQLite 元数据缓存 |
-| `apps/okf-cli` | 参数校验、依赖组装、JSON 输出、预算检查和退出码 |
+| `apps/okf-cli` | 参数校验、依赖组装、取消信号、JSON 输出、输出上限和退出码 |
 | `skills/okf-consume` | 指导 Agent 调用 CLI、处理覆盖状态和引用原文 |
 | `schemas` | 响应 envelope 的 JSON Schema |
 
@@ -48,17 +48,17 @@ flowchart TD
     Adapters --> DB[SQLite 元数据]
 ```
 
-核心不执行文件系统、数据库或时钟 I/O。应用通过端口访问知识包和缓存，读取时间由 CLI 注入。存储适配器处理文件访问与持久化，应用决定扫描预算、分页和响应内容。
+核心不执行文件系统、数据库或时钟 I/O。应用通过端口访问知识包和缓存，读取时间与请求控制对象由 CLI 注入。`RequestControl` 使用单调时钟检查截止时间并共享取消信号；`ScanBudget` 在目录打开和迭代器推进前扣减预算。适配器通过 `Listing.complete` 声明列举是否完整，应用决定分页和响应内容。
 
 ## 读取流程
 
 1. CLI 解析参数，确定运行目录、项目根目录及配置作用域。
-2. 配置适配器加载知识包绑定；同名绑定要求显式选择作用域。
+2. 应用从一次配置读取中选择知识包并检查别名歧义；同名绑定要求显式选择作用域。
 3. 文件系统适配器检查真实路径是否位于知识包根目录内。
 4. 应用按命令生成知识包概览、目录卡片、搜索候选或原文分页。
 5. 读取概念元数据时更新缓存，CLI 序列化响应并检查输出上限。
 
-`context` 概览探测知识包根目录，不加载概念正文。`browse` 展开一层目录；有 `index.md` 时返回作者索引的读取引用，没有时返回结构化条目。`search` 扫描元数据；`context --query` 复用该检索逻辑并追加原文读取入口。原文始终由 `read` 显式获取。
+`context` 探测知识包根目录，`browse` 返回一层目录条目及已发现的作者索引引用。`search` 扫描元数据；`context --query` 复用检索并追加 `read` 入口。原文由 `read` 显式获取。
 
 ## 文件与模型
 
@@ -75,6 +75,8 @@ flowchart TD
 SQLite 位于运行目录的 `index.sqlite`。`cards` 表按知识包缓存键与文件路径记录内容哈希、卡片 JSON 和观测时间。知识包绑定 ID、类型、根路径及作用域共同参与缓存隔离。
 
 缓存是历史观测记录，`status` 只统计卡片数量和最近观测时间。浏览与搜索仍检查知识包文件；缓存不保存正文，也不承担离线读取或全库完整性判断。
+
+浏览与检索按条目隔离读取故障，多知识包概览与检索按知识包隔离故障。缓存故障保留已读取内容并附诊断；取消与截止时间停止后续读取。响应分别表达执行结果、知识包覆盖范围与缓存诊断，具体规则见 [CLI 参考](cli-contract.md#故障与覆盖)。
 
 ## 路径与一致性
 

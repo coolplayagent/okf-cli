@@ -1,7 +1,17 @@
 use okf_adapters::{ConfigRegistry, Filesystem, SqliteCache};
-use okf_application::{BundleBinding, BundleReader, BundleRegistry, Cache};
+use okf_application::{
+    BundleBinding, BundleReader, BundleRegistry, Cache, RequestControl, ScanBudget,
+};
 use okf_core::Document;
 use std::fs;
+use std::{
+    sync::{atomic::AtomicBool, Arc},
+    time::Duration,
+};
+
+fn control() -> RequestControl {
+    RequestControl::new(Duration::from_secs(30), Arc::new(AtomicBool::new(false)))
+}
 
 fn binding(root: &std::path::Path) -> BundleBinding {
     BundleBinding {
@@ -42,7 +52,10 @@ fn size_limits_and_cache_roundtrip() {
     fs::write(root.path().join("note.md"), "---\ntype: Note\n---\nbody").unwrap();
     let b = binding(root.path());
     assert_eq!(
-        Filesystem.read(&b, "note.md", 3).unwrap_err().code,
+        Filesystem
+            .read(&b, "note.md", 3, &control())
+            .unwrap_err()
+            .code,
         "DOCUMENT_TOO_LARGE"
     );
     let cache = SqliteCache::open(&root.path().join("cache.sqlite")).unwrap();
@@ -72,12 +85,21 @@ fn symlinks_cannot_escape_or_form_directory_cycles() {
     .unwrap();
     let b = binding(root.path());
     assert_eq!(
-        Filesystem.read(&b, "leak.md", 1024).unwrap_err().code,
+        Filesystem
+            .read(&b, "leak.md", 1024, &control())
+            .unwrap_err()
+            .code,
         "PATH_ESCAPE"
     );
     fs::remove_file(root.path().join("leak.md")).unwrap();
     std::os::unix::fs::symlink(root.path(), root.path().join("loop")).unwrap();
-    assert_eq!(Filesystem.list(&b, "").unwrap_err().code, "DIRECTORY_LINK");
+    assert_eq!(
+        Filesystem
+            .list(&b, "", &mut ScanBudget::new(100, &control()))
+            .unwrap_err()
+            .code,
+        "DIRECTORY_LINK"
+    );
 }
 
 #[cfg(unix)]
@@ -89,8 +111,61 @@ fn case_collisions_are_not_silently_merged() {
     // macOS may use a case-insensitive filesystem.
     if fs::read_dir(root.path()).unwrap().count() == 2 {
         assert_eq!(
-            Filesystem.list(&binding(root.path()), "").unwrap_err().code,
+            Filesystem
+                .list(
+                    &binding(root.path()),
+                    "",
+                    &mut ScanBudget::new(100, &control())
+                )
+                .unwrap_err()
+                .code,
             "CASE_COLLISION"
         );
     }
+}
+
+#[test]
+fn scan_budget_bounds_enumeration_including_ignored_files() {
+    let root = tempfile::tempdir().unwrap();
+    for index in 0..40 {
+        fs::write(root.path().join(format!("ignored-{index}.txt")), "ignored").unwrap();
+    }
+    let control = control();
+    let mut budget = ScanBudget::new(4, &control);
+    let listing = Filesystem
+        .list(&binding(root.path()), "", &mut budget)
+        .unwrap();
+    assert!(!listing.complete);
+    assert!(listing.entries.is_empty());
+    assert_eq!(budget.used(), 4);
+    let mut budget = ScanBudget::new(42, &control);
+    assert!(
+        Filesystem
+            .list(&binding(root.path()), "", &mut budget)
+            .unwrap()
+            .complete
+    );
+    assert_eq!(budget.used(), 42); // Open + 40 entries + end-of-directory.
+}
+
+#[test]
+fn expired_or_cancelled_requests_stop_before_filesystem_access() {
+    let root = tempfile::tempdir().unwrap();
+    let b = binding(root.path());
+    let expired = RequestControl::new(Duration::ZERO, Arc::new(AtomicBool::new(false)));
+    assert_eq!(
+        Filesystem
+            .list(&b, "missing", &mut ScanBudget::new(100, &expired))
+            .unwrap_err()
+            .code,
+        "DEADLINE_EXCEEDED"
+    );
+    let cancelled = RequestControl::new(Duration::from_secs(30), Arc::new(AtomicBool::new(true)));
+    assert_eq!(
+        Filesystem
+            .read(&b, "missing.md", 1024, &cancelled)
+            .unwrap_err()
+            .code,
+        "CANCELLED"
+    );
 }

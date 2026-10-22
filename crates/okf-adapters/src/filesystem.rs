@@ -1,4 +1,4 @@
-use okf_application::{BundleBinding, BundleReader, Entry};
+use okf_application::{BundleBinding, BundleReader, Entry, Listing, RequestControl, ScanBudget};
 use okf_core::{logical_path, Error, Result};
 use std::{
     collections::BTreeMap,
@@ -7,8 +7,6 @@ use std::{
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
-
-const MAX_DIRECTORY_ENTRIES: usize = 10_000;
 
 pub struct Filesystem;
 
@@ -51,19 +49,27 @@ impl BundleReader for Filesystem {
         Self::root(binding).map(|_| ())
     }
 
-    fn list(&self, binding: &BundleBinding, directory: &str) -> Result<Vec<Entry>> {
+    fn list(
+        &self,
+        binding: &BundleBinding,
+        directory: &str,
+        budget: &mut ScanBudget<'_>,
+    ) -> Result<Listing> {
+        budget.charge()?;
         let root = Self::root(binding)?;
         let folder = Self::contained(&root, directory)?;
         let mut entries = vec![];
         let mut names = BTreeMap::new();
-        for (count, item) in fs::read_dir(&folder).map_err(map_io)?.enumerate() {
-            if count >= MAX_DIRECTORY_ENTRIES {
-                return Err(Error::new(
-                    "DIRECTORY_LIMIT",
-                    "directory exceeds 10000 entries; bind a narrower root",
-                    7,
-                ));
+        let mut iterator = fs::read_dir(&folder).map_err(map_io)?;
+        let complete = loop {
+            match budget.charge() {
+                Ok(()) => {}
+                Err(error) if error.code == "SCAN_LIMIT" => break false,
+                Err(error) => return Err(error),
             }
+            let Some(item) = iterator.next() else {
+                break true;
+            };
             let item = item.map_err(map_io)?;
             let name = item
                 .file_name()
@@ -109,12 +115,20 @@ impl BundleReader for Filesystem {
                 bytes: meta.len(),
                 revision: format!("{}:{modified}", meta.len()),
             });
-        }
+        };
         entries.sort_by(|a, b| a.path.cmp(&b.path));
-        Ok(entries)
+        budget.control.check()?;
+        Ok(Listing { entries, complete })
     }
 
-    fn read(&self, binding: &BundleBinding, path: &str, max_bytes: usize) -> Result<String> {
+    fn read(
+        &self,
+        binding: &BundleBinding,
+        path: &str,
+        max_bytes: usize,
+        control: &RequestControl,
+    ) -> Result<String> {
+        control.check()?;
         let root = Self::root(binding)?;
         let actual = Self::contained(&root, path)?;
         let mut file = fs::File::open(&actual).map_err(map_io)?;
@@ -134,10 +148,17 @@ impl BundleReader for Filesystem {
             ));
         }
         let mut bytes = vec![];
-        Read::by_ref(&mut file)
-            .take(max_bytes as u64 + 1)
-            .read_to_end(&mut bytes)
-            .map_err(map_io)?;
+        let mut chunk = [0_u8; 8192];
+        while bytes.len() <= max_bytes {
+            control.check()?;
+            let length = chunk.len().min(max_bytes + 1 - bytes.len());
+            let count = file.read(&mut chunk[..length]).map_err(map_io)?;
+            if count == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&chunk[..count]);
+        }
+        control.check()?;
         let after = file.metadata().map_err(map_io)?;
         if bytes.len() > max_bytes {
             return Err(Error::new(

@@ -1,11 +1,21 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use okf_adapters::{default_home, ConfigRegistry, Filesystem, SqliteCache};
 use okf_application::{
-    App, BundleBinding, BundleReader, BundleRegistry, Cache, ReadOptions, Response,
+    App, BundleBinding, BundleReader, BundleRegistry, Cache, ReadOptions, RequestControl, Response,
+    UnavailableCache,
 };
-use okf_core::{sha256, Error, Result};
+use okf_core::{sha256, Diagnostic, Error, Result};
 use serde_json::json;
-use std::{io::Write, path::PathBuf, process::ExitCode};
+use std::{
+    io::Write,
+    path::PathBuf,
+    process::ExitCode,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 
 #[derive(Parser)]
 #[command(
@@ -60,13 +70,13 @@ enum Command {
         #[arg(long)]
         query: Option<String>,
         #[command(flatten)]
-        page: PageArgs,
+        page: ContextArgs,
     },
     /// Expand one directory. Reserved index text is available through read.
     Browse {
         reference: String,
         #[command(flatten)]
-        page: PageArgs,
+        page: BrowseArgs,
     },
     /// Read exact original UTF-8 bytes, with revision-checked continuation.
     Read {
@@ -74,7 +84,7 @@ enum Command {
         #[arg(long)]
         raw: bool,
         #[command(flatten)]
-        page: PageArgs,
+        page: ReadArgs,
     },
     /// Bounded metadata search; this is not full-text search.
     Search {
@@ -82,7 +92,7 @@ enum Command {
         #[arg(long = "bundle")]
         bundles: Vec<String>,
         #[command(flatten)]
-        page: PageArgs,
+        page: SearchArgs,
     },
     Status {
         name: Option<String>,
@@ -90,7 +100,7 @@ enum Command {
     Validate {
         name: String,
         #[command(flatten)]
-        page: PageArgs,
+        page: ScanArgs,
     },
     Doctor,
     Skill {
@@ -124,23 +134,118 @@ enum SkillCommand {
 }
 
 #[derive(Args)]
-struct PageArgs {
+struct ResultArgs {
     #[arg(long, default_value_t = 20, value_parser = parse_limit)]
     limit: usize,
     #[arg(long, value_parser = parse_budget)]
     budget_bytes: Option<usize>,
-    #[arg(long, default_value_t = 100, value_parser = parse_scan)]
-    max_scan: usize,
-    #[arg(long)]
-    cursor: Option<String>,
 }
-impl PageArgs {
-    fn options(&self, default_budget: usize) -> ReadOptions {
+impl ResultArgs {
+    fn options(
+        &self,
+        default_budget: usize,
+        max_scan: usize,
+        cursor: Option<String>,
+    ) -> ReadOptions {
         ReadOptions {
             limit: self.limit,
             budget: self.budget_bytes.unwrap_or(default_budget),
-            max_scan: self.max_scan,
+            max_scan,
+            cursor,
+        }
+    }
+}
+
+#[derive(Args)]
+struct WorkArgs {
+    /// Cooperative elapsed-time limit for this request, in milliseconds.
+    #[arg(long, default_value_t = 30_000, value_parser = clap::value_parser!(u64).range(1..=3_600_000))]
+    timeout_ms: u64,
+}
+
+#[derive(Args)]
+struct ScanArgs {
+    /// Maximum directory opens and iterator steps, including ignored entries.
+    #[arg(long, default_value_t = 100, value_parser = parse_scan)]
+    max_scan: usize,
+    #[command(flatten)]
+    work: WorkArgs,
+}
+
+#[derive(Args)]
+struct ContextArgs {
+    #[command(flatten)]
+    results: ResultArgs,
+    /// Maximum directory opens and iterator steps; requires --query.
+    #[arg(long, requires = "query", value_parser = parse_scan)]
+    max_scan: Option<usize>,
+    #[command(flatten)]
+    work: WorkArgs,
+}
+impl ContextArgs {
+    fn options(&self) -> ReadOptions {
+        self.results
+            .options(24 * 1024, self.max_scan.unwrap_or(100), None)
+    }
+}
+
+#[derive(Args)]
+struct SearchArgs {
+    #[command(flatten)]
+    results: ResultArgs,
+    #[command(flatten)]
+    scan: ScanArgs,
+}
+impl SearchArgs {
+    fn options(&self) -> ReadOptions {
+        self.results.options(16 * 1024, self.scan.max_scan, None)
+    }
+}
+
+#[derive(Args)]
+struct BrowseArgs {
+    #[command(flatten)]
+    search: SearchArgs,
+    #[arg(long)]
+    cursor: Option<String>,
+}
+impl BrowseArgs {
+    fn options(&self) -> ReadOptions {
+        self.search
+            .results
+            .options(16 * 1024, self.search.scan.max_scan, self.cursor.clone())
+    }
+}
+
+#[derive(Args)]
+struct ReadArgs {
+    #[arg(long, default_value_t = 65_536, value_parser = parse_budget)]
+    budget_bytes: usize,
+    #[arg(long)]
+    cursor: Option<String>,
+    #[command(flatten)]
+    work: WorkArgs,
+}
+impl ReadArgs {
+    fn options(&self) -> ReadOptions {
+        ReadOptions {
+            limit: 1,
+            budget: self.budget_bytes,
+            max_scan: 0,
             cursor: self.cursor.clone(),
+        }
+    }
+}
+
+impl Command {
+    fn timeout_ms(&self) -> Option<u64> {
+        match self {
+            Self::Context { page, .. } => Some(page.work.timeout_ms),
+            Self::Browse { page, .. } => Some(page.search.scan.work.timeout_ms),
+            Self::Read { page, .. } => Some(page.work.timeout_ms),
+            Self::Search { page, .. } => Some(page.scan.work.timeout_ms),
+            Self::Validate { page, .. } => Some(page.work.timeout_ms),
+            _ => None,
         }
     }
 }
@@ -182,7 +287,8 @@ fn argument_output_limit(args: &[String]) -> usize {
         .unwrap_or(131072)
 }
 
-fn run(cli: &Cli) -> Result<Response> {
+fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
+    control.check()?;
     // Skill installation does not open the registry or database.
     if let Command::Skill {
         command: SkillCommand::Install { path },
@@ -215,15 +321,25 @@ fn run(cli: &Cli) -> Result<Response> {
         std::env::current_dir().map_err(Error::io)?,
         cli.scope.map(|s| s.label().into()),
     );
-    let cache = SqliteCache::open(&home.join("index.sqlite"))?;
+    let cache_result = SqliteCache::open(&home.join("index.sqlite"));
+    let unavailable;
+    let cache: &dyn Cache = match &cache_result {
+        Ok(cache) => cache,
+        Err(error) if cli.command.timeout_ms().is_some() => {
+            unavailable = UnavailableCache(error.clone());
+            &unavailable
+        }
+        Err(error) => return Err(error.clone()),
+    };
     let reader = Filesystem;
     let app = App {
         registry: &registry,
         reader: &reader,
-        cache: &cache,
+        cache,
         now: chrono::Utc::now(),
+        control,
     };
-    match &cli.command {
+    let mut response = match &cli.command {
         Command::Bundle { command } => match command {
             BundleCommand::Add { name, kind, path } => {
                 if name.is_empty()
@@ -293,7 +409,7 @@ fn run(cli: &Cli) -> Result<Response> {
             page,
         } => {
             if let Some(query) = query {
-                let mut response = app.search(query, bundles, &page.options(24 * 1024))?;
+                let mut response = app.search(query, bundles, &page.options())?;
                 response.command = "context".into();
                 response.data["disclosure"] = json!("metadata_candidates");
                 if let Some(items) = response.data["items"].as_array() {
@@ -305,21 +421,29 @@ fn run(cli: &Cli) -> Result<Response> {
                 }
                 Ok(response)
             } else {
-                app.context(bundles, &page.options(24 * 1024))
+                app.context(bundles, &page.options())
             }
         }
-        Command::Browse { reference, page } => app.browse(reference, &page.options(16 * 1024)),
+        Command::Browse { reference, page } => app.browse(reference, &page.options()),
         Command::Read {
             reference,
             raw,
             page,
-        } => app.read(reference, *raw, &page.options(64 * 1024)),
+        } => app.read(reference, *raw, &page.options()),
         Command::Search {
             query,
             bundles,
             page,
-        } => app.search(query, bundles, &page.options(16 * 1024)),
-        Command::Validate { name, page } => app.validate(name, &page.options(16 * 1024)),
+        } => app.search(query, bundles, &page.options()),
+        Command::Validate { name, page } => app.validate(
+            name,
+            &ReadOptions {
+                limit: 0,
+                budget: 0,
+                max_scan: page.max_scan,
+                cursor: None,
+            },
+        ),
         Command::Status { name } => {
             let bindings = if let Some(name) = name {
                 vec![app.binding(name)?]
@@ -340,7 +464,25 @@ fn run(cli: &Cli) -> Result<Response> {
             "adapters": ["fs"], "sqlite": "ready", "entrypoint": "cli"}),
         )),
         Command::Skill { .. } => unreachable!(),
+    }?;
+    if let Err(error) = &cache_result {
+        if !response
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "CACHE_WRITE_FAILED")
+        {
+            if response.status == "error" {
+                response.diagnostics.push(Diagnostic::new(
+                    "CACHE_UNAVAILABLE",
+                    &error.message,
+                    None,
+                ));
+            } else {
+                response.partial("CACHE_UNAVAILABLE", &error.message);
+            }
+        }
     }
+    Ok(response)
 }
 
 fn error_response(command: &str, error: Error) -> Response {
@@ -428,6 +570,21 @@ fn main() -> ExitCode {
             return ExitCode::from(code);
         }
     };
-    let response = run(&cli).unwrap_or_else(|error| error_response("request", error));
+    let cancelled = Arc::new(AtomicBool::new(false));
+    if cli.command.timeout_ms().is_some() {
+        let signal = Arc::clone(&cancelled);
+        if let Err(error) = ctrlc::set_handler(move || signal.store(true, Ordering::Relaxed)) {
+            return emit(
+                error_response("request", Error::io(error)),
+                cli.format,
+                cli.max_output_bytes,
+            );
+        }
+    }
+    let control = RequestControl::new(
+        Duration::from_millis(cli.command.timeout_ms().unwrap_or(30_000)),
+        cancelled,
+    );
+    let response = run(&cli, &control).unwrap_or_else(|error| error_response("request", error));
     emit(response, cli.format, cli.max_output_bytes)
 }
