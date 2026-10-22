@@ -4,13 +4,19 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use okf_core::{
-    decode_cursor, encode_cursor, logical_path, prefix_end, reserved, sha256, Diagnostic, Document,
-    Error, Result,
+    decode_cursor, encode_cursor, logical_path, prefix_end, reserved, sha256, validate_reserved,
+    Card, Diagnostic, Document, Error, Result, Severity,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, VecDeque};
 
 const MAX_DOCUMENT: usize = 2 * 1024 * 1024;
+
+struct CardObservation {
+    value: Value,
+    diagnostics: Vec<Diagnostic>,
+    cache_error: Option<Error>,
+}
 
 pub struct App<'a> {
     pub registry: &'a dyn BundleRegistry,
@@ -52,32 +58,47 @@ impl App<'_> {
         Ok((self.binding(name)?, logical_path(path)?))
     }
 
-    fn card(&self, binding: &BundleBinding, path: &str) -> Result<(Value, Option<Error>)> {
+    fn remember_card(
+        &self,
+        binding: &BundleBinding,
+        path: &str,
+        hash: &str,
+        card: &Card,
+    ) -> Result<Option<Error>> {
+        self.control.check()?;
+        Ok(self
+            .cache
+            .remember(
+                &binding.cache_key(),
+                path,
+                hash,
+                card,
+                &self.now.to_rfc3339(),
+            )
+            .err())
+    }
+
+    fn card(&self, binding: &BundleBinding, path: &str) -> Result<CardObservation> {
         self.control.check()?;
         let raw = self
             .reader
             .read(binding, path, MAX_DOCUMENT, self.control)?;
         let doc = Document::parse(&raw)?;
+        let diagnostics = doc.diagnostics(&format!("@{}/{}", binding.name, path));
         let id = path.strip_suffix(".md").unwrap_or(path);
         let card = doc.card(id, self.now);
         let hash = sha256(raw.as_bytes());
-        self.control.check()?;
-        let cache_error = self
-            .cache
-            .remember(
-                &binding.cache_key(),
-                path,
-                &hash,
-                &card,
-                &self.now.to_rfc3339(),
-            )
-            .err();
+        let cache_error = self.remember_card(binding, path, &hash, &card)?;
         let mut value = serde_json::to_value(card).map_err(Error::io)?;
         value["kind"] = json!("concept");
         value["ref"] = json!(format!("@{}/{}", binding.name, id));
         value["bundle_id"] = json!(binding.id);
         value["content_sha256"] = json!(hash);
-        Ok((value, cache_error))
+        Ok(CardObservation {
+            value,
+            diagnostics,
+            cache_error,
+        })
     }
 
     pub fn context(&self, selected: &[String], options: &ReadOptions) -> Result<Response> {
@@ -196,7 +217,12 @@ impl App<'_> {
                 continue;
             } else {
                 match self.card(&binding, &entry.path) {
-                    Ok((card, cache_error)) => {
+                    Ok(CardObservation {
+                        value: card,
+                        diagnostics,
+                        cache_error,
+                    }) => {
+                        response.diagnostics.extend(diagnostics);
                         if let Some(error) = cache_error {
                             response.partial("CACHE_WRITE_FAILED", &error.message);
                         }
@@ -291,21 +317,10 @@ impl App<'_> {
             match Document::parse(&raw) {
                 Ok(doc) => {
                     let card = doc.card(concept_id, self.now);
-                    if card.expiry == "unknown" {
-                        response.diagnostics.push(Diagnostic::new(
-                            "INVALID_TIMESTAMP",
-                            "stale_after is not a timezone-aware timestamp",
-                            Some(&path),
-                        ));
-                    }
-                    self.control.check()?;
-                    if let Err(error) = self.cache.remember(
-                        &binding.cache_key(),
-                        &path,
-                        &hash,
-                        &card,
-                        &self.now.to_rfc3339(),
-                    ) {
+                    response
+                        .diagnostics
+                        .extend(doc.diagnostics(&format!("@{}/{}", binding.name, path)));
+                    if let Some(error) = self.remember_card(&binding, &path, &hash, &card)? {
                         response.partial("CACHE_WRITE_FAILED", &error.message);
                     }
                     response.data["card"] = serde_json::to_value(card).map_err(Error::io)?;
@@ -415,7 +430,12 @@ impl App<'_> {
                         }
                     } else if !reserved(&entry.path) {
                         let card = match self.card(binding, &entry.path) {
-                            Ok((card, cache_error)) => {
+                            Ok(CardObservation {
+                                value: card,
+                                diagnostics,
+                                cache_error,
+                            }) => {
+                                response.diagnostics.extend(diagnostics);
                                 if let Some(error) = cache_error {
                                     response.issue(
                                         &Error::new("CACHE_WRITE_FAILED", error.message, 7),
@@ -534,22 +554,27 @@ impl App<'_> {
                     .read(&binding, &entry.path, MAX_DOCUMENT, self.control)
                     .and_then(|raw| {
                         if reserved(&entry.path) {
-                            validate_reserved(&entry.path, &raw)
+                            validate_reserved(&entry.path, &raw).map(|()| vec![])
                         } else {
-                            Document::parse(&raw).map(|_| ())
+                            Document::parse(&raw).map(|doc| {
+                                doc.diagnostics(&format!("@{}/{}", binding.name, entry.path))
+                            })
                         }
                     });
-                if let Err(e) = result {
-                    if interrupted(&e) {
-                        response.issue(&e, &format!("@{}/{}", binding.name, entry.path));
-                        break 'scan;
+                match result {
+                    Ok(diagnostics) => response.diagnostics.extend(diagnostics),
+                    Err(e) => {
+                        if interrupted(&e) {
+                            response.issue(&e, &format!("@{}/{}", binding.name, entry.path));
+                            break 'scan;
+                        }
+                        failures += 1;
+                        response.diagnostics.push(Diagnostic::new(
+                            &e.code,
+                            e.message,
+                            Some(&entry.path),
+                        ));
                     }
-                    failures += 1;
-                    response.diagnostics.push(Diagnostic::new(
-                        &e.code,
-                        e.message,
-                        Some(&entry.path),
-                    ));
                 }
                 response.data["checked"] =
                     json!(response.data["checked"].as_u64().unwrap_or(0) + 1);
@@ -560,6 +585,11 @@ impl App<'_> {
             }
         }
         response.data["failures"] = json!(failures);
+        response.data["warnings"] = json!(response
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
+            .count());
         if let Err(error) = self.control.check() {
             if !response.diagnostics.iter().any(|d| d.code == error.code) {
                 response.issue(&error, &format!("@{}", binding.name));
@@ -632,31 +662,6 @@ fn check_cursor(
             "bundle changed; restart pagination",
             6,
         ));
-    }
-    Ok(())
-}
-
-fn validate_reserved(path: &str, raw: &str) -> Result<()> {
-    if path.ends_with("index.md") && raw.trim_start_matches('\u{feff}').starts_with("---") {
-        let (fm, _) = okf_core::frontmatter(raw)?;
-        if path != "index.md" || fm.keys().any(|k| k != "okf_version") {
-            return Err(Error::new(
-                "INVALID_OKF",
-                "index frontmatter is only allowed at root with okf_version",
-                1,
-            ));
-        }
-    }
-    if path.ends_with("log.md") {
-        for line in raw.lines().filter_map(|s| s.strip_prefix("## ")) {
-            if chrono::NaiveDate::parse_from_str(line.trim(), "%Y-%m-%d").is_err() {
-                return Err(Error::new(
-                    "INVALID_OKF",
-                    "log date headings must be YYYY-MM-DD",
-                    1,
-                ));
-            }
-        }
     }
     Ok(())
 }

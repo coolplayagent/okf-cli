@@ -4,6 +4,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
+mod metadata;
+mod yaml_value;
+pub use metadata::validate_reserved;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -38,6 +41,16 @@ pub struct Diagnostic {
     pub code: String,
     pub message: String,
     pub path: Option<String>,
+    pub severity: Severity,
+    /// JSON Pointer into the concept frontmatter, when a field is identifiable.
+    pub field: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warning,
 }
 impl Diagnostic {
     pub fn new(code: &str, message: impl Into<String>, path: Option<&str>) -> Self {
@@ -45,6 +58,17 @@ impl Diagnostic {
             code: code.into(),
             message: message.into(),
             path: path.map(str::to_owned),
+            severity: Severity::Error,
+            field: None,
+        }
+    }
+    pub fn warning(code: &str, message: impl Into<String>, field: Option<&str>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+            path: None,
+            severity: Severity::Warning,
+            field: field.map(str::to_owned),
         }
     }
 }
@@ -91,8 +115,9 @@ pub fn frontmatter(raw: &str) -> Result<(Map<String, Value>, usize)> {
     let mut offset = start;
     for line in lines {
         if line.trim_end() == "---" {
-            let value: Value = serde_yaml_ng::from_str(&raw[start..offset])
-                .map_err(|e| Error::new("INVALID_OKF", format!("invalid YAML: {e}"), 1))?;
+            let value = serde_yaml_ng::from_str::<yaml_value::YamlValue>(&raw[start..offset])
+                .map_err(|e| Error::new("INVALID_OKF", format!("invalid YAML: {e}"), 1))?
+                .0;
             let map = value
                 .as_object()
                 .cloned()
@@ -109,6 +134,9 @@ pub fn frontmatter(raw: &str) -> Result<(Map<String, Value>, usize)> {
 }
 
 impl Document {
+    pub fn diagnostics(&self, path: &str) -> Vec<Diagnostic> {
+        metadata::diagnostics(&self.frontmatter, path)
+    }
     pub fn parse(raw: &str) -> Result<Self> {
         let (frontmatter, body_start) = frontmatter(raw)?;
         if frontmatter
@@ -154,7 +182,7 @@ impl Document {
         let actors: Vec<&str> = events
             .iter()
             .filter_map(|v| v.get("by").and_then(Value::as_str))
-            .filter(|s| !s.trim().is_empty())
+            .filter(|s| metadata::valid_actor(s))
             .collect();
         let trust = if actors
             .iter()
@@ -168,10 +196,7 @@ impl Document {
         };
         let expiry = match self.frontmatter.get("stale_after") {
             None => "unspecified",
-            Some(v) => match v
-                .as_str()
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-            {
+            Some(v) => match v.as_str().and_then(metadata::timestamp) {
                 Some(t) if now >= t.with_timezone(&Utc) => "expired",
                 Some(_) => "current",
                 None => "unknown",

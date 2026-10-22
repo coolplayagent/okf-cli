@@ -27,7 +27,7 @@ okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元
 
 | 模块 | 职责 |
 | --- | --- |
-| `crates/okf-core` | 逻辑路径校验、YAML frontmatter、概念卡片、生命周期、SHA-256、UTF-8 字节分页和 cursor 编解码 |
+| `crates/okf-core` | 逻辑路径、YAML frontmatter、元数据诊断、保留文件检查、概念卡片、生命周期、SHA-256、UTF-8 字节分页和 cursor 编解码 |
 | `crates/okf-application` | 知识包选择、概览、浏览、原文读取、元数据搜索和合规检查；定义 `BundleRegistry`、`BundleReader`、`Cache` 端口 |
 | `crates/okf-adapters` | 文件系统读取、TOML 配置和 SQLite 元数据缓存 |
 | `apps/okf-cli` | 参数校验、依赖组装、取消信号、JSON 输出、输出上限和退出码 |
@@ -64,9 +64,11 @@ flowchart TD
 
 知识文件使用 UTF-8 Markdown 和 YAML frontmatter。`Document` 保留 frontmatter 与正文起始偏移；原文由读取流程单独保留，不经渲染重写。概念必须有非空字符串 `type`，未知元数据字段保留。
 
+`YamlValue` 负责 YAML 到 JSON 值的转换，保留解析器支持的 128 位整数和普通映射键，避免扩展字段与 JSON 库的内部数值标记冲突。
+
 概念 ID 为包内路径去掉末尾一个 `.md`；引用格式为 `@别名/路径`。逻辑路径统一使用 `/`，允许 Unicode 和空格，拒绝绝对路径、反斜杠、盘符及 `.`、`..` 路径段。`index.md` 和 `log.md` 是保留资源，不作为普通概念卡片。
 
-卡片中的 `trust`、`status` 和 `expiry` 分别表达审核声明、文档状态与过期情况。`human:` 前缀来自源文件声明，不是身份认证；非法过期时间派生为 `unknown`。
+`Document::parse` 检查概念结构，`Document::diagnostics` 返回带字段定位的元数据警告，`Document::card` 派生卡片。时间解析和 Actor 规则由诊断与卡片派生共用，具体规则见 [检查矩阵](okf-validation.md)。应用层提供完整文件引用，将元数据警告与读取故障分别汇入响应，并复用缓存写入流程记录卡片观测。
 
 ## 配置与缓存
 

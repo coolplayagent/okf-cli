@@ -92,6 +92,7 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 
 - [产品与架构](docs/architecture.md)：模块边界、数据流和存储职责。
 - [CLI 与 Agent 参考](docs/cli-contract.md)：命令参数、响应结构和消费流程。
+- [OKF 检查矩阵](docs/okf-validation.md)：规范依据、诊断级别和字段定位。
 - [实现状态](docs/implementation-status.md)：功能范围、行为边界和验证方法。
 - [实施计划](docs/roadmap.md)：开发阶段与验收目标。
 

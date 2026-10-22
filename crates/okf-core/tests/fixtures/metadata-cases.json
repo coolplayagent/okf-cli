@@ -1,0 +1,39 @@
+{
+  "reference": {
+    "repository": "https://github.com/GoogleCloudPlatform/open-knowledge-format",
+    "revision": "ad30107c31c06aec8a7d5636e0d1058118604e6f",
+    "version": "0.2",
+    "sections": ["4.1", "5", "7", "11"],
+    "description": "Locally authored consumer cases checked against the pinned specification."
+  },
+  "cases": [
+    {"name":"minimal-unknown-type-and-extension","yaml":"type: Future Concept\nextra: {nested: [1, 2]}\n","warnings":[],"trust":"unverified","status":"stable","expiry":"unspecified"},
+    {"name":"valid-provenance-and-scope-descriptor","yaml":"type: Note\ntitle: Example\ndescription: Test knowledge\nresource: https://example.test/asset\ntags: [one, two]\ngenerated: {by: worker/1.0, at: '2026-10-21T00:00:00Z'}\nsources:\n  - {id: population, resource: 'all queries in project X', author: 'team:analytics', usage_count: 0, last_modified: '2026-10-20T00:00:00Z'}\nusage_window: {from: '2026-10-01T00:00:00Z', to: '2026-10-21T00:00:00Z'}\n","warnings":[],"trust":"unverified"},
+    {"name":"verified-mapping","yaml":"type: Note\nverified: {by: 'human:reviewer', at: '2026-10-21T00:00:00Z'}\n","warnings":[],"trust":"human-reviewed"},
+    {"name":"verified-list","yaml":"type: Note\nverified: [{by: 'human:reviewer', at: '2026-10-21T00:00:00Z'}]\n","warnings":[],"trust":"human-reviewed"},
+    {"name":"machine-verification","yaml":"type: Note\nverified: [{by: 'process:nightly', at: '2026-10-21T00:00:00Z'}, {by: worker/2.0, at: '2026-10-21T01:00:00Z'}]\n","warnings":[],"trust":"machine-confirmed"},
+    {"name":"generated-time-optional","yaml":"type: Note\ngenerated: {by: 'human:author'}\n","warnings":[]},
+    {"name":"scalar-family-shapes","yaml":"type: Note\ngenerated: true\nverified: bad\nsources: wrong\nusage_window: []\n","warnings":[["INVALID_METADATA_TYPE","/generated"],["INVALID_METADATA_TYPE","/verified"],["INVALID_METADATA_TYPE","/sources"],["INVALID_METADATA_TYPE","/usage_window"]]},
+    {"name":"nested-required-fields","yaml":"type: Note\ngenerated: {}\nverified: [{}]\nsources: [{}]\n","warnings":[["MISSING_METADATA_FIELD","/generated/by"],["MISSING_METADATA_FIELD","/verified/0/by"],["MISSING_METADATA_FIELD","/verified/0/at"],["MISSING_METADATA_FIELD","/sources/0/resource"]]},
+    {"name":"invalid-actors","yaml":"type: Note\ngenerated: {by: unnamed}\nverified: {by: 'human:   ', at: '2026-10-21T00:00:00Z'}\n","warnings":[["INVALID_ACTOR","/generated/by"],["INVALID_ACTOR","/verified/by"]],"trust":"unverified"},
+    {"name":"invalid-times","yaml":"type: Note\ngenerated: {by: worker/1, at: '2026-10-21'}\nverified: {by: 'human:reviewer', at: '2026-10-21T00:00:00'}\nsources: [{resource: 'a scope', last_modified: nope}]\nstale_after: 5\n","warnings":[["INVALID_TIMESTAMP","/generated/at"],["INVALID_TIMESTAMP","/verified/at"],["INVALID_TIMESTAMP","/sources/0/last_modified"],["INVALID_TIMESTAMP","/stale_after"]],"expiry":"unknown"},
+    {"name":"iso-basic-offset","yaml":"type: Note\nstale_after: '2026-10-23T08:00:00+0800'\n","warnings":[],"expiry":"current"},
+    {"name":"iso-basic-date","yaml":"type: Note\nstale_after: '20261023T080000+0800'\n","warnings":[],"expiry":"current"},
+    {"name":"iso-basic-date-utc","yaml":"type: Note\nstale_after: '20261023T080000Z'\n","warnings":[],"expiry":"current"},
+    {"name":"iso-minute-utc","yaml":"type: Note\nstale_after: '2026-10-23T08:00Z'\n","warnings":[],"expiry":"current"},
+    {"name":"iso-minute-offset","yaml":"type: Note\nstale_after: '2026-10-23T08:00+08:00'\n","warnings":[],"expiry":"current"},
+    {"name":"unpadded-time-components","yaml":"type: Note\nstale_after: '2026-1-2T3:4:5+0800'\n","warnings":[["INVALID_TIMESTAMP","/stale_after"]],"expiry":"unknown"},
+    {"name":"unpadded-minute-components","yaml":"type: Note\nstale_after: '2026-10-23T8:0Z'\n","warnings":[["INVALID_TIMESTAMP","/stale_after"]],"expiry":"unknown"},
+    {"name":"invalid-zone-and-calendar","yaml":"type: Note\ngenerated: {by: worker/1, at: '2026-02-29T00:00:00Z'}\nverified: {by: 'human:reviewer', at: '2026-10-23T08:00:00+24:00'}\nstale_after: '2026-10-23T08:00+0800Z'\n","warnings":[["INVALID_TIMESTAMP","/generated/at"],["INVALID_TIMESTAMP","/verified/at"],["INVALID_TIMESTAMP","/stale_after"]],"expiry":"unknown"},
+    {"name":"wide-positive-integers","yaml":"type: Note\nsources: [{resource: scope, usage_count: 18446744073709551616}]\ncustom: {positive: 340282366920938463463374607431768211455, negative: -170141183460469231731687303715884105728}\n","warnings":[]},
+    {"name":"wide-negative-usage-count","yaml":"type: Note\nsources: [{resource: scope, usage_count: -18446744073709551616}]\n","warnings":[["INVALID_METADATA_VALUE","/sources/0/usage_count"]]},
+    {"name":"fractional-usage-count","yaml":"type: Note\nsources: [{resource: scope, usage_count: 1.5}]\n","warnings":[["INVALID_METADATA_VALUE","/sources/0/usage_count"]]},
+    {"name":"expiry-at-boundary","yaml":"type: Note\nstale_after: '2026-10-22T08:00:00+08:00'\n","warnings":[],"expiry":"expired"},
+    {"name":"invalid-common-shapes","yaml":"type: Note\ntitle: 1\ndescription: []\nresource: {}\ntags: [valid, 9]\nstatus: 3\n","warnings":[["INVALID_METADATA_TYPE","/title"],["INVALID_METADATA_TYPE","/description"],["INVALID_METADATA_TYPE","/resource"],["INVALID_METADATA_TYPE","/tags/1"],["INVALID_METADATA_TYPE","/status"]],"status":"stable"},
+    {"name":"unknown-status-preserved","yaml":"type: Note\nstatus: experimental\n","warnings":[["INVALID_STATUS","/status"]],"status":"experimental"},
+    {"name":"duplicate-source-id-and-invalid-signals","yaml":"type: Note\nsources:\n  - {id: duplicate, resource: /one.md}\n  - {id: duplicate, resource: /two.md, usage_count: -1, usage_window: {from: '2026-10-22T00:00:00Z', to: '2026-10-21T00:00:00Z'}}\n","warnings":[["DUPLICATE_SOURCE_ID","/sources/1/id"],["INVALID_METADATA_VALUE","/sources/1/usage_count"],["INVALID_TIME_RANGE","/sources/1/usage_window"]]},
+    {"name":"missing-window-boundary","yaml":"type: Note\nusage_window: {from: '2026-10-21T00:00:00Z'}\n","warnings":[["MISSING_METADATA_FIELD","/usage_window/to"]]},
+    {"name":"empty-and-nonobject-source","yaml":"type: Note\nsources: [null, {id: '', resource: ''}]\nverified: [3]\n","warnings":[["INVALID_METADATA_TYPE","/verified/0"],["INVALID_METADATA_TYPE","/sources/0"],["INVALID_METADATA_VALUE","/sources/1/resource"],["INVALID_METADATA_VALUE","/sources/1/id"]]},
+    {"name":"null-optionals-are-present-malformed-values","yaml":"type: Note\ntitle: null\ntags: null\nstale_after: null\n","warnings":[["INVALID_METADATA_TYPE","/title"],["INVALID_METADATA_TYPE","/tags"],["INVALID_TIMESTAMP","/stale_after"]],"expiry":"unknown"}
+  ]
+}

@@ -26,11 +26,13 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["code", "message", "path"],
+        "required": ["code", "message", "path", "severity", "field"],
         "properties": {
           "code": {"type": "string"},
           "message": {"type": "string"},
-          "path": {"type": ["string", "null"]}
+          "path": {"type": ["string", "null"]},
+          "severity": {"enum": ["error", "warning"]},
+          "field": {"description": "JSON Pointer into concept frontmatter; null for document or operation diagnostics.", "type": ["string", "null"], "pattern": "^/"}
         }
       }
     },
