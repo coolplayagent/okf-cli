@@ -1,0 +1,18 @@
+[package]
+name = "okf-adapters"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+okf-core.workspace = true
+okf-application.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+toml.workspace = true
+tempfile.workspace = true
+dirs.workspace = true
+
+[dev-dependencies]
+chrono.workspace = true
