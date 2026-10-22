@@ -1,13 +1,13 @@
 # OKF 检查矩阵
 
-本页定义消费过程中的结构检查与元数据建议，依据为固定提交的 [OKF v0.2 规范](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md)。命令和响应规则见 [CLI 参考](cli-contract.md)。
+本页定义结构检查、元数据与正文诊断，依据为固定提交的 [OKF v0.2 规范](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/ad30107c31c06aec8a7d5636e0d1058118604e6f/SPEC.md)。命令和响应规则见 [CLI 参考](cli-contract.md)。
 
 ## 诊断与消费
 
 `read`、`browse`、`search`、`context --query` 和 `validate` 使用相同的元数据规则。
 
 - `error` 表示结构不合规或操作故障，是否终止请求由命令决定。例如浏览跳过坏概念并返回部分结果，显式 `read --raw` 可以返回带结构错误诊断的原文。
-- `warning` 表示可选元数据的形状或取值不符合规范指导。警告不拒绝概念、不改变退出码，也不降低知识包读取覆盖率。
+- `warning` 表示元数据或正文中的质量建议，包括来源归因问题与断链。警告不拒绝概念、不改变退出码，也不降低元数据覆盖。
 - 可选字段缺失、未知 `type`、未知扩展字段和缺失索引不会触发元数据警告。未知字段保持原值，原文不被重写。
 
 诊断字段定义见 [JSON 响应](cli-contract.md#json-响应)。下表中的字段级警告通过 `field` 定位，例如 `/verified/0/at`。
@@ -39,12 +39,41 @@
 
 卡片只从有效 Actor 标识派生审核层级；无有效核验者时为 `unverified`，人类核验者优先于机器核验者。缺少或非字符串 `status` 派生为 `stable`；未知字符串状态原样保留并附警告。非法 `stale_after` 派生为 `unknown`，到期判断使用 `now >= stale_after`。
 
-每份概念最多返回 64 项元数据发现；超出时追加一项 `METADATA_DIAGNOSTICS_TRUNCATED` 警告。这个上限仅限制诊断条目，知识包覆盖仍由实际读取范围决定；整个响应继续受输出字节上限约束。
+## 正文链接与来源脚注
+
+`sources[].resource` 按材料标识检查，不会触发网络访问或文件存在性检查。来源归因通过脚注标签与 `sources[].id` 关联，不依赖来源在列表中的位置；来源无需全部被引用。
+
+使用 Markdown 解析器提取普通链接、引用式链接与脚注，排除图片、代码和 HTML 块。包根路径以 `/` 开头，文档相对路径允许 `.` 和 `..`，归一化后必须留在知识包内。路径中的百分号编码按 UTF-8 解码；查询串和片段不参与文件定位。外部 URI 不触发访问，片段保留但不校验渲染器生成的锚点。
+
+目录形式包括解码后以 `/` 结尾的路径，以及末段为 `.` 或 `..` 的导航。文件链接与目录链接分别匹配相应类型的目标。Markdown 脚注定义的匹配可以忽略大小写，来源 ID 则按引用标签精确关联。
+
+| 检查对象 | 诊断 code | 行为 |
+| --- | --- | --- |
+| 非法路径字符或编码 | `INVALID_LINK_PATH` | 当前文件返回正文警告 |
+| 归一化后越出知识包 | `LINK_PATH_ESCAPE` | 当前文件返回正文警告，不读取目标 |
+| 脚注没有匹配的来源 ID | `UNRESOLVED_SOURCE` | 当前概念返回正文警告 |
+| 脚注引用缺少定义 | `UNDEFINED_FOOTNOTE` | 当前概念返回正文警告 |
+| 包内 Markdown 文件或显式目录不存在，或文件与目录类型不符 | `BROKEN_LINK` | 仅在 `validate` 完整列举后检查 |
+
+按需读取仅检查当前文件，不访问链接目标；`validate` 复用完整目录清单检查目标。保留文件参与链接检查，但不要求来源 frontmatter。正文位置的响应格式见 [JSON 响应](cli-contract.md#json-响应)。
+
+## 诊断上限
+
+| 范围 | 上限 | 超出时的诊断 | 影响 |
+| --- | --- | --- | --- |
+| 每份概念的元数据警告 | 64 条 | `METADATA_DIAGNOSTICS_TRUNCATED` | 追加一条截断警告，元数据覆盖保持不变 |
+| 每份文件的链接与脚注引用收集 | 各 256 个 | `BODY_DIAGNOSTICS_TRUNCATED` | 追加一条截断警告，链接检查完整性为 false |
+| 每份文件的正文警告 | 64 条，路径、脚注与断链共用 | `BODY_DIAGNOSTICS_TRUNCATED` | 每份文件最多追加一条截断警告，链接检查完整性为 false |
+| `validate` 保留的待检查链接 | 4096 条或 2 MiB 字符串总字节 | `LINK_LIMIT` | 返回部分结果与退出码 7，保留已完成的元数据覆盖 |
+
+元数据和正文的警告上限分别计数；截断提示不占各自的 64 条限额。整个响应还受输出字节上限约束，`validate` 的预算字段与检查完整性见 [CLI 参考](cli-contract.md#故障与覆盖)。
 
 ## 范围与验证
 
-`sources[].resource` 按材料标识检查，不会触发网络访问或文件存在性检查。尚未覆盖的 OKF 能力见 [已知边界](implementation-status.md#已知边界)。
+扫描未完成时不推断目标缺失；文件读取失败或正文诊断截断使链接检查完整性为 false。链接检查阶段取消也保留已完成的元数据覆盖。尚未覆盖的能力见 [已知边界](implementation-status.md#已知边界)。
 
-[固定样例](../crates/okf-core/tests/fixtures/metadata-cases.json) 记录规范版本、输入元数据、预期诊断和派生结果。验证应覆盖字段形状、单对象与列表等价、时区与到期边界、原文字节不变，以及警告与结构错误、扫描中断并存。
+[固定样例](../crates/okf-core/tests/fixtures/metadata-cases.json) 记录规范版本、输入元数据、预期诊断和派生结果。元数据验证应覆盖字段形状、单对象与列表等价、时区与到期边界，以及警告与结构错误并存。
+
+[正文测试](../crates/okf-core/tests/markdown.rs) 覆盖路径解析、引用式链接、代码排除与来源 ID 关联。CLI 验收还应检查文件与目录类型、混合警告共用上限、扫描及链接检查阶段取消，以及分页中的诊断位置始终相对于原文件。读取前后核对源文件字节与哈希。
 
 可使用 [okf-skills 校验器](https://github.com/scaccogatto/okf-skills/blob/49f8fb4987989b7a443ce278c6aa68ba0493b51f/skills/validate/scripts/okf_validate.py) 交叉核对默认模式下的结构合规结果。参考工具会提示部分推荐字段缺失，并采用不同的时间、来源和链接建议策略；本项目的警告策略以本矩阵为准，不要求警告条数一致。

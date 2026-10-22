@@ -23,7 +23,7 @@ Exit codes: 0 success; 1 validation findings; 2 arguments/configuration; 3 missi
 
 Handle execution diagnostics alongside the returned coverage:
 
-- Metadata `warning` diagnostics do not invalidate a concept or make a request partial. Use `path` and the JSON Pointer `field` to locate findings; document-level findings have a null `field`. Preserve relevant qualifications when using the knowledge.
+- Metadata and body `warning` diagnostics do not invalidate a concept or make a request partial. Use `path` with the JSON Pointer `field` or original-file byte `location` to locate findings. Preserve relevant qualifications when using the knowledge. `validate` checks link targets only after complete enumeration; inspect `data.link_check.complete` before interpreting the absence of broken-link warnings.
 - `CANCELLED` or `DEADLINE_EXCEEDED`: use completed results with their stated limits. Do not automatically retry a user cancellation. Consumption commands accept `--timeout-ms N`, defaulting to 30000, and cooperate with Ctrl+C.
 - `SCAN_LIMIT` on browse: increase `--max-scan` and restart. An incomplete directory listing has no continuation cursor.
 - `CACHE_WRITE_FAILED` or `CACHE_UNAVAILABLE`: readable knowledge can still be returned. Cache diagnostics do not by themselves imply incomplete knowledge coverage or override complete validation findings.

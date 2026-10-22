@@ -32,7 +32,17 @@
           "message": {"type": "string"},
           "path": {"type": ["string", "null"]},
           "severity": {"enum": ["error", "warning"]},
-          "field": {"description": "JSON Pointer into concept frontmatter; null for document or operation diagnostics.", "type": ["string", "null"], "pattern": "^/"}
+          "field": {"description": "JSON Pointer into concept frontmatter; null for document or operation diagnostics.", "type": ["string", "null"], "pattern": "^/"},
+          "location": {
+            "description": "Optional half-open UTF-8 byte range in the complete original file, including BOM and frontmatter.",
+            "type": "object",
+            "required": ["byte_start", "byte_end"],
+            "properties": {
+              "byte_start": {"type": "integer", "minimum": 0},
+              "byte_end": {"type": "integer", "minimum": 0}
+            },
+            "additionalProperties": false
+          }
         }
       }
     },

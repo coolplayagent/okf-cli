@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt;
+pub mod markdown;
 mod metadata;
 mod yaml_value;
 pub use metadata::validate_reserved;
@@ -44,6 +45,15 @@ pub struct Diagnostic {
     pub severity: Severity,
     /// JSON Pointer into the concept frontmatter, when a field is identifiable.
     pub field: Option<String>,
+    /// Half-open UTF-8 byte range in the complete original file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<ByteRange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ByteRange {
+    pub byte_start: usize,
+    pub byte_end: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +70,7 @@ impl Diagnostic {
             path: path.map(str::to_owned),
             severity: Severity::Error,
             field: None,
+            location: None,
         }
     }
     pub fn warning(code: &str, message: impl Into<String>, field: Option<&str>) -> Self {
@@ -69,6 +80,7 @@ impl Diagnostic {
             path: None,
             severity: Severity::Warning,
             field: field.map(str::to_owned),
+            location: None,
         }
     }
 }
