@@ -1,6 +1,8 @@
 //! Application use cases depend on ports, never on an OS or storage implementation.
+mod control;
 mod service;
 use chrono::{DateTime, Utc};
+pub use control::{interrupted, RequestControl, ScanBudget};
 use okf_core::{Card, Diagnostic, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -39,8 +41,26 @@ pub trait BundleRegistry {
 
 pub trait BundleReader {
     fn probe(&self, binding: &BundleBinding) -> Result<()>;
-    fn list(&self, binding: &BundleBinding, directory: &str) -> Result<Vec<Entry>>;
-    fn read(&self, binding: &BundleBinding, path: &str, max_bytes: usize) -> Result<String>;
+    fn list(
+        &self,
+        binding: &BundleBinding,
+        directory: &str,
+        budget: &mut ScanBudget<'_>,
+    ) -> Result<Listing>;
+    fn read(
+        &self,
+        binding: &BundleBinding,
+        path: &str,
+        max_bytes: usize,
+        control: &RequestControl,
+    ) -> Result<String>;
+}
+
+#[derive(Debug)]
+pub struct Listing {
+    pub entries: Vec<Entry>,
+    /// An incomplete enumeration cannot support a revision-checked directory cursor.
+    pub complete: bool,
 }
 
 pub trait Cache {
@@ -53,6 +73,17 @@ pub trait Cache {
         checked_at: &str,
     ) -> Result<()>;
     fn status(&self, bundle_id: &str) -> Result<Value>;
+}
+
+/// Preserve readable bundle results when the observation cache cannot be opened.
+pub struct UnavailableCache(pub okf_core::Error);
+impl Cache for UnavailableCache {
+    fn remember(&self, _: &str, _: &str, _: &str, _: &Card, _: &str) -> Result<()> {
+        Err(self.0.clone())
+    }
+    fn status(&self, _: &str) -> Result<Value> {
+        Err(self.0.clone())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,9 +125,22 @@ impl Response {
         }
     }
     pub fn partial(&mut self, code: &str, message: &str) {
+        self.partial_at(code, message, None);
+    }
+    fn partial_at(&mut self, code: &str, message: &str, path: Option<&str>) {
         self.status = "partial".into();
         self.exit_code = 7;
-        self.diagnostics.push(Diagnostic::new(code, message, None));
+        self.diagnostics.push(Diagnostic::new(code, message, path));
+    }
+    pub fn issue(&mut self, error: &okf_core::Error, path: &str) {
+        self.partial_at(&error.code, &error.message, Some(path));
+    }
+    pub fn unavailable(&mut self, binding: &BundleBinding, scope: &str) {
+        self.bundles.push(json!({
+            "bundle_id": binding.id, "alias": binding.name, "view_kind": "observed",
+            "upstream_revision": null, "checked_at": null, "freshness": "unknown",
+            "coverage": {"scope": scope, "metadata": "unknown", "body": "unknown", "graph": "unknown"}
+        }));
     }
     pub fn observe(
         &mut self,

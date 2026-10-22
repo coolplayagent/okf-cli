@@ -24,11 +24,7 @@
 
 别名长度为 1–64 个 ASCII 字符，只能包含字母、数字、`-` 和 `_`。存储类型支持 `fs`，其他类型返回 `UNSUPPORTED_CAPABILITY`。
 
-## 领域术语
-
-`bundle` 管理 OKF 知识包，`--bundle` 选择已绑定的知识包。OKF 的 Source 专指概念 frontmatter `sources` 中的依据材料。完整定义见 [领域术语](architecture.md#领域术语)。
-
-配置中的 `bundles` 保存知识包绑定；响应中的 `bundles` 保存本次读取的观测信息，`bundle_id` 标识知识包绑定。概念 frontmatter 的 `sources` 保持规范定义，不用于工具配置或读取观测。
+知识包、概念、来源与绑定别名的定义见 [领域术语](architecture.md#领域术语)。配置中的 `bundles` 保存绑定，响应中的同名字段保存读取观测；概念的 `sources` 专指依据材料。
 
 ## 全局选项
 
@@ -41,52 +37,60 @@
 
 业务响应的 stdout 是单个 JSON 对象，不混入日志。帮助和版本输出是文本，包括使用 `--format json` 时。参数错误在显式请求 JSON 时使用相同响应 envelope。
 
-配置位置与知识包绑定方法见 [README](../README.md#配置)。除 Skill 安装外，业务命令会打开运行目录中的 SQLite 缓存，因此运行目录需要可写。
+配置位置与知识包绑定方法见 [README](../README.md#配置)。
 
 ## 引用与原文
 
 `browse @handbook` 展开知识包根目录，`browse @handbook/services` 展开子目录。`read @handbook/services/auth` 读取 `services/auth.md`，也可以传入完整文件名。以 `.md` 结尾的读取引用按完整文件名处理。
 
-`browse` 的目录索引使用 `index.origin` 区分 `authored` 与 `synthesized`。作者索引通过 `index.ref` 单独读取，不嵌入目录结果。`index.md` 与 `log.md` 可直接传给 `read`。
+`browse` 的目录索引使用 `index.origin` 区分 `authored` 与 `synthesized`；目录未完整列举且尚未发现索引时为 `unknown`。作者索引通过 `index.ref` 单独读取，不嵌入目录结果。`index.md` 与 `log.md` 可直接传给 `read`。
 
-普通概念的 frontmatter 必须包含非空字符串 `type`。`read --raw` 可查看不合规 Markdown，并附解析诊断；无效 UTF-8 和大小限制仍会阻止读取。`validate` 还检查根索引 frontmatter 的允许字段、子目录索引限制及日志日期标题，不进行链接图或语义质量检查。
+普通概念的 frontmatter 必须包含非空字符串 `type`。`read --raw` 可查看不合规 Markdown，并附解析诊断；无效 UTF-8 和大小限制仍会阻止读取。`validate` 还检查根索引 frontmatter 的允许字段、子目录索引限制及日志日期标题。
 
 `read` 在 `data.document` 中返回 `bundle_id`、`path`、`concept_id`、`content_sha256`、`byte_start`、`byte_end`、`total_bytes` 和 `text`。字节范围为完整原始文件中的半开区间，包括 BOM、frontmatter 和换行。拼接同一修订的分页 `text` 可以还原文件。
 
 ## 预算与分页
 
-`context`、`browse`、`read`、`search`、`validate` 的帮助列出共用的分页选项；实际生效范围如下。
+各命令只接受下表列出的选项，不适用的选项返回参数错误。单元格给出默认值，`—` 表示不接受该选项。
 
-| 选项 | 默认值与范围 | 生效命令 |
-| --- | --- | --- |
-| `--limit N` | 20；1–100 | `context`、`browse`、`search` 的返回条目数 |
-| `--budget-bytes N` | 见下表；1–65536 | `context`、`browse`、`read`、`search` 的内容字节数 |
-| `--max-scan N` | 100；1–10000 | `browse`、`search`、`context --query`、`validate` |
-| `--cursor TOKEN` | 无 | `browse` 和 `read` 的继续读取 |
+| 命令 | `--limit` | `--budget-bytes` | `--max-scan` | `--cursor` | `--timeout-ms` |
+| --- | --- | --- | --- | --- | --- |
+| `context` 概览 | 20 | 24576 | — | — | 30000 |
+| `context --query` | 20 | 24576 | 100 | — | 30000 |
+| `browse` | 20 | 16384 | 100 | 可选 | 30000 |
+| `read` | — | 65536 | — | 可选 | 30000 |
+| `search` | 20 | 16384 | 100 | — | 30000 |
+| `validate` | — | — | 100 | — | 30000 |
 
-| 命令 | 默认内容预算 |
-| --- | --- |
-| `context`，包括任务查询 | 24 KiB |
-| `browse`、`search` | 16 KiB |
-| `read` | 64 KiB |
+取值范围：`--limit` 为 1–100，`--budget-bytes` 为 1–65536，`--max-scan` 为 1–10000，`--timeout-ms` 为 1–3600000 毫秒。
 
-`read` 不使用条目数与扫描量选项；`validate` 仅使用扫描量选项。概览 `context` 与 `validate` 不使用 cursor，调用时应省略；`search` 和 `context --query` 不支持 cursor，会明确报错。
+原文预算计算返回文本的 UTF-8 字节数，条目预算计算序列化条目字节数；完整响应另外受 `--max-output-bytes` 限制。原文按 Unicode 字符边界分页，放不下下一个字符时返回 `BUDGET_TOO_SMALL`。浏览放不下首个条目时同样报错；搜索跳过超出预算的卡片并报告 `CARD_TOO_LARGE`，概览预算不足时报告 `BUDGET_EXCEEDED`。
 
-原文预算计算返回文本的 UTF-8 字节数；卡片预算计算序列化卡片字节数。两者均不包含完整响应 envelope；整个输出另外受 `--max-output-bytes` 限制。正文按 Unicode 字符边界分页，预算连下一个字符或卡片都放不下时返回 `BUDGET_TOO_SMALL`。
+扫描预算在文件系统适配器内扣减：打开一个目录计一次，每次推进目录迭代器计一次，包括非 Markdown 文件与确认目录结束的那一步。所有目录共用本次请求的预算，不会先列举整个目录再截断。`budget.scan_limit` 和 `budget.scanned_entries` 返回上限与实际计数。单文件读取上限为 2 MiB。
 
-`browse` 的扫描量计数目录条目；搜索与校验同时计数目录展开和条目。单次目录列举另有 10000 条目的上限，单文件读取上限为 2 MiB。扫描预算不替代目录清单的列举上限，也没有超时或取消保证。
+目录清单按路径排序，分页 cursor 校验完整清单的修订。列举预算不足时，`browse` 返回已观测条目的部分结果、`SCAN_LIMIT` 和退出码 7，不生成 cursor；应提高 `--max-scan` 后重新浏览。带 cursor 的请求无法在预算内重建完整清单时返回 `SCAN_LIMIT` 错误，不使用不完整清单验证修订。
 
-有后续分页时，`page.has_more` 为 true，`page.next_cursor` 和 `next` 给出继续入口。将 cursor 原样传给相同知识包、目标和操作；遇到 `REVISION_CHANGED` 时重新开始，不拼接不同修订。
+有后续分页时，`page.has_more` 为 true，`page.next_cursor` 和 `next` 给出继续入口。将 cursor 原样传给相同知识包、目标和操作；遇到 `REVISION_CHANGED` 时重新开始，不拼接不同修订。正常目录和原文分页返回退出码 0；搜索没有续页，达到结果或扫描上限时应缩小范围或提高预算。
 
-正常目录或原文分页返回退出码 0。检索达到扫描、结果数量或内容预算上限时返回 `partial` 与退出码 7；不提供搜索续页，应缩小范围或提高预算。
+## 截止时间与取消
+
+消费命令支持 Ctrl+C 取消，诊断为 `CANCELLED`；超过截止时间时为 `DEADLINE_EXCEEDED`，均使用退出码 7。检查点覆盖目录遍历、逐文件处理和分块读取。概览、检索和校验保留已完成结果；浏览在处理条目时中断也保留已有结果，但无法完成初始目录列举时返回错误。原文读取中断返回错误。
+
+截止时间从请求执行开始计时，在检查点协作生效；操作系统中已阻塞的单次 I/O、数据库操作与序列化不能被强制中断。这个选项不能作为进程运行时间的硬上限。
 
 ## 搜索与生命周期
 
-查询按空白拆词，忽略大小写，并要求所有词都在卡片的检索字段中出现。支持中文子串，结果按知识包引用排序，不提供相关性分数或正文片段。`context --query` 复用元数据检索，返回 `disclosure: metadata_candidates` 与 `read` 入口，不自动加载正文。
+查询按空白拆词，忽略大小写，并要求所有词都在卡片的检索字段中出现。支持中文子串，结果按知识包引用排序。`context --query` 复用元数据检索，返回 `disclosure: metadata_candidates` 与 `read` 入口。
 
-卡片直接返回 `trust`、`status` 和 `expiry`，没有嵌套的 `lifecycle` 字段。缺少状态时使用 `stable`；审核声明派生为 `unverified`、`machine-confirmed` 或 `human-reviewed`；过期状态为 `unspecified`、`current`、`expired` 或 `unknown`。这些字段是源元数据的派生结果，不提供身份验证或内容真实性保证。
+卡片中的 `trust`、`status` 和 `expiry` 从元数据派生。缺少状态时使用 `stable`；审核层级为 `unverified`、`machine-confirmed` 或 `human-reviewed`；过期状态为 `unspecified`、`current`、`expired` 或 `unknown`。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
 
-坏概念在目录和检索结果中以诊断报告，其他结果可继续返回。单知识包的目录级错误会终止操作；概览探测或多知识包检索的目录列举失败可以返回部分结果，文件读取与缓存错误仍可能终止整个请求。
+## 故障与覆盖
+
+浏览或检索遇到坏概念、文件读取失败时，返回带路径的诊断和部分结果，继续处理可用条目。多知识包概览和检索隔离知识包故障，保留其他包的结果；单知识包初始目录不可读时返回错误。未开始读取、探测失败或未能展开目录的包使用 `freshness: unknown`、`checked_at: null` 与未知覆盖状态。
+
+除 Skill 安装外，业务命令会尝试打开 SQLite 缓存。消费命令遇到缓存故障时保留可读内容：写入失败使用 `CACHE_WRITE_FAILED`，打开失败且本次操作没有尝试写入卡片时使用 `CACHE_UNAVAILABLE`。配置管理、`status` 和 `doctor` 保留缓存错误。
+
+缓存问题与知识文件覆盖分别表达，完整校验发现的文档错误优先于缓存诊断。`SCAN_LIMIT` 仅用于扫描预算耗尽，文件故障或取消不会被标为预算不足。
 
 ## JSON 响应
 
@@ -120,8 +124,8 @@
 | 4 | 访问被拒绝、路径越界或目录链接被拒绝 |
 | 5 | I/O、缓存或配置锁错误 |
 | 6 | 读取期间内容变化或分页修订已变化 |
-| 7 | 部分结果，或文件、目录、输出等资源超限 |
+| 7 | 部分结果、资源超限、截止时间或取消 |
 
-完整合规检查发现错误时为 `status: error`、退出码 1；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。文件过大和输出超限也使用退出码 7，但响应为 `error`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
+完整合规检查发现错误时为 `status: error`、退出码 1，缓存不可用诊断不会覆盖这个结果；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。文件过大和输出超限也使用退出码 7，但响应为 `error`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
 
 Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际读取的文件、字节范围和内容哈希，并保留影响答案的过期、审核和覆盖限定。消费流程见 [消费 Skill](../skills/okf-consume/SKILL.md)。

@@ -1,4 +1,7 @@
-use crate::{BundleBinding, BundleReader, BundleRegistry, Cache, Cursor, ReadOptions, Response};
+use crate::{
+    interrupted, BundleBinding, BundleReader, BundleRegistry, Cache, Cursor, ReadOptions,
+    RequestControl, Response, ScanBudget,
+};
 use chrono::{DateTime, Utc};
 use okf_core::{
     decode_cursor, encode_cursor, logical_path, prefix_end, reserved, sha256, Diagnostic, Document,
@@ -14,29 +17,31 @@ pub struct App<'a> {
     pub reader: &'a dyn BundleReader,
     pub cache: &'a dyn Cache,
     pub now: DateTime<Utc>,
+    pub control: &'a RequestControl,
 }
 
 impl App<'_> {
     pub fn binding(&self, name: &str) -> Result<BundleBinding> {
-        let bindings: Vec<_> = self
-            .registry
-            .list()?
-            .into_iter()
-            .filter(|s| s.name == name)
-            .collect();
-        match bindings.len() {
-            0 => Err(Error::new(
-                "BUNDLE_NOT_FOUND",
-                format!("unknown bundle: {name}"),
-                3,
-            )),
-            1 => Ok(bindings[0].clone()),
-            _ => Err(Error::new(
-                "AMBIGUOUS_BUNDLE",
-                "alias exists in project and user scopes; select --scope",
+        find_binding(&self.registry.list()?, name).cloned()
+    }
+
+    fn selected_bindings(&self, selected: &[String]) -> Result<Vec<BundleBinding>> {
+        let bindings = self.registry.list()?;
+        if bindings.is_empty() {
+            return Err(Error::new(
+                "NO_BUNDLES",
+                "register a knowledge bundle with bundle add",
                 2,
-            )),
+            ));
         }
+        for name in selected {
+            find_binding(&bindings, name)?;
+        }
+        bindings
+            .iter()
+            .filter(|binding| selected.is_empty() || selected.contains(&binding.name))
+            .map(|binding| find_binding(&bindings, &binding.name).cloned())
+            .collect()
     }
 
     fn resolve(&self, reference: &str) -> Result<(BundleBinding, String)> {
@@ -47,50 +52,45 @@ impl App<'_> {
         Ok((self.binding(name)?, logical_path(path)?))
     }
 
-    fn card(&self, binding: &BundleBinding, path: &str) -> Result<Value> {
-        let raw = self.reader.read(binding, path, MAX_DOCUMENT)?;
+    fn card(&self, binding: &BundleBinding, path: &str) -> Result<(Value, Option<Error>)> {
+        self.control.check()?;
+        let raw = self
+            .reader
+            .read(binding, path, MAX_DOCUMENT, self.control)?;
         let doc = Document::parse(&raw)?;
         let id = path.strip_suffix(".md").unwrap_or(path);
         let card = doc.card(id, self.now);
         let hash = sha256(raw.as_bytes());
-        self.cache.remember(
-            &binding.cache_key(),
-            path,
-            &hash,
-            &card,
-            &self.now.to_rfc3339(),
-        )?;
+        self.control.check()?;
+        let cache_error = self
+            .cache
+            .remember(
+                &binding.cache_key(),
+                path,
+                &hash,
+                &card,
+                &self.now.to_rfc3339(),
+            )
+            .err();
         let mut value = serde_json::to_value(card).map_err(Error::io)?;
         value["kind"] = json!("concept");
         value["ref"] = json!(format!("@{}/{}", binding.name, id));
         value["bundle_id"] = json!(binding.id);
         value["content_sha256"] = json!(hash);
-        Ok(value)
+        Ok((value, cache_error))
     }
 
     pub fn context(&self, selected: &[String], options: &ReadOptions) -> Result<Response> {
-        let bindings = self.registry.list()?;
-        if bindings.is_empty() {
-            return Err(Error::new(
-                "NO_BUNDLES",
-                "register a knowledge bundle with bundle add",
-                2,
-            ));
-        }
-        for name in selected {
-            self.binding(name)?;
-        }
-        let bindings: Vec<_> = bindings
-            .into_iter()
-            .filter(|b| selected.is_empty() || selected.contains(&b.name))
-            .collect();
-        for binding in &bindings {
-            self.binding(&binding.name)?;
-        }
+        let bindings = self.selected_bindings(selected)?;
         let mut response = Response::new("context", json!({"items": []}));
         let mut used = 0;
         let mut items = vec![];
         for binding in &bindings {
+            if let Err(error) = self.control.check() {
+                response.issue(&error, &format!("@{}", binding.name));
+                response.unavailable(binding, "");
+                continue;
+            }
             if items.len() >= options.limit {
                 response.partial(
                     "BUNDLE_LIMIT",
@@ -103,6 +103,12 @@ impl App<'_> {
                     return Err(error);
                 }
                 response.partial(&error.code, &format!("{}: {}", binding.name, error.message));
+                response.unavailable(binding, "");
+                continue;
+            }
+            if let Err(error) = self.control.check() {
+                response.issue(&error, &format!("@{}", binding.name));
+                response.unavailable(binding, "");
                 continue;
             }
             let item = json!({"bundle_id": binding.id, "name": binding.name, "kind": binding.kind,
@@ -130,7 +136,17 @@ impl App<'_> {
 
     pub fn browse(&self, reference: &str, options: &ReadOptions) -> Result<Response> {
         let (binding, directory) = self.resolve(reference)?;
-        let entries = self.reader.list(&binding, &directory)?;
+        let mut scan = ScanBudget::new(options.max_scan, self.control);
+        let listing = self.reader.list(&binding, &directory, &mut scan)?;
+        let mut complete = listing.complete;
+        if !listing.complete && options.cursor.is_some() {
+            return Err(Error::new(
+                "SCAN_LIMIT",
+                "cannot verify directory cursor within scan budget; increase --max-scan",
+                7,
+            ));
+        }
+        let entries = listing.entries;
         let revision = sha256(&serde_json::to_vec(&entries).map_err(Error::io)?);
         let mut index = 0;
         if let Some(token) = &options.cursor {
@@ -143,11 +159,16 @@ impl App<'_> {
         }
         let mut response = Response::new(
             "browse",
-            json!({"directory": reference, "items": [], "index": {"origin": "synthesized"}}),
+            json!({"directory": reference, "items": [], "index": {"origin": if listing.complete { "synthesized" } else { "unknown" }}}),
         );
         let mut items = vec![];
         let mut used = 0;
-        let mut scanned = 0;
+        if !listing.complete {
+            response.partial(
+                "SCAN_LIMIT",
+                "directory enumeration is incomplete; increase --max-scan and restart browse",
+            );
+        }
         // Index text has its own page through read; never consume an entire large index here.
         let index_path = if directory.is_empty() {
             "index.md".into()
@@ -161,9 +182,13 @@ impl App<'_> {
                 json!({"operation": "read", "target": format!("@{}/{}", binding.name, index_path)}),
             );
         }
-        while index < entries.len() && items.len() < options.limit && scanned < options.max_scan {
+        while index < entries.len() && items.len() < options.limit {
+            if let Err(error) = self.control.check() {
+                complete = false;
+                response.partial(&error.code, &error.message);
+                break;
+            }
             let entry = &entries[index];
-            scanned += 1;
             let item = if entry.directory {
                 json!({"kind": "directory", "id": entry.path, "ref": format!("@{}/{}", binding.name, entry.path)})
             } else if reserved(&entry.path) {
@@ -171,17 +196,23 @@ impl App<'_> {
                 continue;
             } else {
                 match self.card(&binding, &entry.path) {
-                    Ok(card) => card,
-                    Err(error) if error.code == "INVALID_OKF" => {
-                        response.diagnostics.push(Diagnostic::new(
-                            &error.code,
-                            error.message,
-                            Some(&entry.path),
-                        ));
+                    Ok((card, cache_error)) => {
+                        if let Some(error) = cache_error {
+                            response.partial("CACHE_WRITE_FAILED", &error.message);
+                        }
+                        card
+                    }
+                    Err(error) if interrupted(&error) => {
+                        complete = false;
+                        response.partial(&error.code, &error.message);
+                        break;
+                    }
+                    Err(error) => {
+                        complete = false;
+                        response.issue(&error, &format!("@{}/{}", binding.name, entry.path));
                         index += 1;
                         continue;
                     }
-                    Err(error) => return Err(error),
                 }
             };
             if !fits(&item, &mut used, options.budget) {
@@ -197,7 +228,13 @@ impl App<'_> {
             items.push(item);
             index += 1;
         }
-        let more = index < entries.len();
+        if let Err(error) = self.control.check() {
+            complete = false;
+            if !response.diagnostics.iter().any(|d| d.code == error.code) {
+                response.partial(&error.code, &error.message);
+            }
+        }
+        let more = index < entries.len() && listing.complete;
         let cursor = if more {
             Some(encode_cursor(&Cursor {
                 bundle_id: binding.id.clone(),
@@ -216,12 +253,16 @@ impl App<'_> {
                 .push(json!({"operation": "browse", "target": reference, "cursor": cursor}));
         }
         response.data["items"] = json!(items);
-        response.budget = json!({"content_bytes_limit": options.budget, "content_bytes_used": used, "scanned_files": scanned});
+        response.budget = json!({"content_bytes_limit": options.budget, "content_bytes_used": used, "scan_limit": options.max_scan, "scanned_entries": scan.used()});
         response.observe(
             &binding,
             self.now,
             &directory,
-            if more { "partial" } else { "complete" },
+            if more || !complete {
+                "partial"
+            } else {
+                "complete"
+            },
         );
         Ok(response)
     }
@@ -240,7 +281,9 @@ impl App<'_> {
         } else {
             format!("{id}.md")
         };
-        let raw = self.reader.read(&binding, &path, MAX_DOCUMENT)?;
+        let raw = self
+            .reader
+            .read(&binding, &path, MAX_DOCUMENT, self.control)?;
         let hash = sha256(raw.as_bytes());
         let concept_id = path.strip_suffix(".md").unwrap_or(&path);
         let mut response = Response::new("read", json!({}));
@@ -255,13 +298,16 @@ impl App<'_> {
                             Some(&path),
                         ));
                     }
-                    self.cache.remember(
+                    self.control.check()?;
+                    if let Err(error) = self.cache.remember(
                         &binding.cache_key(),
                         &path,
                         &hash,
                         &card,
                         &self.now.to_rfc3339(),
-                    )?;
+                    ) {
+                        response.partial("CACHE_WRITE_FAILED", &error.message);
+                    }
                     response.data["card"] = serde_json::to_value(card).map_err(Error::io)?;
                 }
                 Err(e) if raw_mode => {
@@ -295,6 +341,7 @@ impl App<'_> {
         response.data["document"] = json!({"bundle_id": binding.id, "path": path,
             "concept_id": concept_id, "content_sha256": hash,
             "byte_start": start, "byte_end": end, "total_bytes": raw.len(), "text": &raw[start..end]});
+        self.control.check()?;
         response.page = json!({"returned": 1, "total": 1, "has_more": more, "next_cursor": cursor});
         response.budget = json!({"content_bytes_limit": options.budget, "content_bytes_used": end - start, "truncated": more});
         if more {
@@ -322,71 +369,70 @@ impl App<'_> {
                 2,
             ));
         }
-        let all = self.registry.list()?;
-        if all.is_empty() {
-            return Err(Error::new("NO_BUNDLES", "register a bundle first", 2));
-        }
-        for name in selected {
-            self.binding(name)?;
-        }
-        let bindings: Vec<_> = all
-            .into_iter()
-            .filter(|b| selected.is_empty() || selected.contains(&b.name))
-            .collect();
-        for binding in &bindings {
-            self.binding(&binding.name)?;
-        }
+        let bindings = self.selected_bindings(selected)?;
         let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
         let mut response = Response::new(
             "search",
             json!({"query": query, "mode": "metadata", "items": []}),
         );
         let mut matches = vec![];
-        let mut remaining = options.max_scan;
+        let mut scan = ScanBudget::new(options.max_scan, self.control);
         let mut match_count = 0;
         for binding in &bindings {
             let mut queue = VecDeque::from([String::new()]);
             let mut seen = BTreeSet::new();
             let mut complete = true;
+            let mut observed = false;
             'scan: while let Some(directory) = queue.pop_front() {
-                if remaining == 0 {
-                    complete = false;
-                    break;
-                }
-                // Directory work counts too: empty trees cannot evade the scan budget.
-                remaining -= 1;
-                let entries = match self.reader.list(binding, &directory) {
-                    Ok(entries) => entries,
-                    Err(error) if bindings.len() > 1 => {
-                        response
-                            .partial(&error.code, &format!("{}: {}", binding.name, error.message));
+                let listing = match self.reader.list(binding, &directory, &mut scan) {
+                    Ok(listing) => listing,
+                    Err(error)
+                        if interrupted(&error)
+                            || error.code == "SCAN_LIMIT"
+                            || bindings.len() > 1
+                            || observed =>
+                    {
+                        response.issue(&error, &format!("@{}/{}", binding.name, directory));
                         complete = false;
                         break;
                     }
                     Err(error) => return Err(error),
                 };
-                for entry in entries {
-                    if remaining == 0 {
+                observed = true;
+                if !listing.complete {
+                    complete = false;
+                    response.issue(&Error::new("SCAN_LIMIT", "metadata scan budget reached; increase --max-scan or select fewer bundles", 7), &format!("@{}/{}", binding.name, directory));
+                }
+                for entry in listing.entries {
+                    if let Err(error) = self.control.check() {
+                        response.issue(&error, &format!("@{}", binding.name));
                         complete = false;
                         break 'scan;
                     }
-                    remaining -= 1;
                     if entry.directory {
                         if seen.insert(entry.path.clone()) {
                             queue.push_back(entry.path);
                         }
                     } else if !reserved(&entry.path) {
                         let card = match self.card(binding, &entry.path) {
-                            Ok(card) => card,
-                            Err(e) if e.code == "INVALID_OKF" => {
-                                response.diagnostics.push(Diagnostic::new(
-                                    &e.code,
-                                    e.message,
-                                    Some(&entry.path),
-                                ));
+                            Ok((card, cache_error)) => {
+                                if let Some(error) = cache_error {
+                                    response.issue(
+                                        &Error::new("CACHE_WRITE_FAILED", error.message, 7),
+                                        &format!("@{}/{}", binding.name, entry.path),
+                                    );
+                                }
+                                card
+                            }
+                            Err(error) => {
+                                response
+                                    .issue(&error, &format!("@{}/{}", binding.name, entry.path));
+                                complete = false;
+                                if interrupted(&error) {
+                                    break 'scan;
+                                }
                                 continue;
                             }
-                            Err(e) => return Err(e),
                         };
                         let haystack = format!(
                             "{} {} {} {} {}",
@@ -411,18 +457,22 @@ impl App<'_> {
                     }
                 }
             }
-            if !complete {
-                response.partial(
-                    "INDEX_PARTIAL",
-                    "metadata scan budget reached; increase --max-scan or select fewer bundles",
-                );
+            if let Err(error) = self.control.check() {
+                complete = false;
+                if !response.diagnostics.iter().any(|d| d.code == error.code) {
+                    response.issue(&error, &format!("@{}", binding.name));
+                }
             }
-            response.observe(
-                binding,
-                self.now,
-                "",
-                if complete { "complete" } else { "partial" },
-            );
+            if observed {
+                response.observe(
+                    binding,
+                    self.now,
+                    "",
+                    if complete { "complete" } else { "partial" },
+                );
+            } else {
+                response.unavailable(binding, "");
+            }
         }
         matches.sort_by(|a, b| a["ref"].as_str().cmp(&b["ref"].as_str()));
         let total = match_count;
@@ -443,7 +493,7 @@ impl App<'_> {
             response.page["total"] = json!(total);
         }
         response.data["items"] = json!(items);
-        response.budget = json!({"content_bytes_limit": options.budget, "content_bytes_used": used, "scanned_entries": options.max_scan - remaining});
+        response.budget = json!({"content_bytes_limit": options.budget, "content_bytes_used": used, "scan_limit": options.max_scan, "scanned_entries": scan.used()});
         Ok(response)
     }
 
@@ -451,27 +501,37 @@ impl App<'_> {
         let binding = self.binding(name)?;
         let mut response = Response::new("validate", json!({"concepts": 0, "checked": 0}));
         let mut queue = VecDeque::from([String::new()]);
-        let mut scanned = 0;
+        let mut scan = ScanBudget::new(options.max_scan, self.control);
         let mut failures = 0;
+        let mut observed = false;
         'scan: while let Some(directory) = queue.pop_front() {
-            if scanned >= options.max_scan {
-                response.partial("INDEX_PARTIAL", "validation scan budget reached");
-                break;
+            let listing = match self.reader.list(&binding, &directory, &mut scan) {
+                Ok(listing) => listing,
+                Err(error) if interrupted(&error) || error.code == "SCAN_LIMIT" => {
+                    response.issue(&error, &format!("@{}/{}", binding.name, directory));
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            observed = true;
+            if !listing.complete {
+                response.issue(
+                    &Error::new("SCAN_LIMIT", "validation scan budget reached", 7),
+                    &format!("@{}/{}", binding.name, directory),
+                );
             }
-            scanned += 1;
-            for entry in self.reader.list(&binding, &directory)? {
-                if scanned >= options.max_scan {
-                    response.partial("INDEX_PARTIAL", "validation scan budget reached");
+            for entry in listing.entries {
+                if let Err(error) = self.control.check() {
+                    response.issue(&error, &format!("@{}", binding.name));
                     break 'scan;
                 }
-                scanned += 1;
                 if entry.directory {
                     queue.push_back(entry.path);
                     continue;
                 }
                 let result = self
                     .reader
-                    .read(&binding, &entry.path, MAX_DOCUMENT)
+                    .read(&binding, &entry.path, MAX_DOCUMENT, self.control)
                     .and_then(|raw| {
                         if reserved(&entry.path) {
                             validate_reserved(&entry.path, &raw)
@@ -480,6 +540,10 @@ impl App<'_> {
                         }
                     });
                 if let Err(e) = result {
+                    if interrupted(&e) {
+                        response.issue(&e, &format!("@{}/{}", binding.name, entry.path));
+                        break 'scan;
+                    }
                     failures += 1;
                     response.diagnostics.push(Diagnostic::new(
                         &e.code,
@@ -496,22 +560,47 @@ impl App<'_> {
             }
         }
         response.data["failures"] = json!(failures);
+        if let Err(error) = self.control.check() {
+            if !response.diagnostics.iter().any(|d| d.code == error.code) {
+                response.issue(&error, &format!("@{}", binding.name));
+            }
+        }
+        response.budget = json!({"scan_limit": options.max_scan, "scanned_entries": scan.used()});
         if failures > 0 && response.exit_code == 0 {
             response.status = "error".into();
             response.exit_code = 1;
         }
-        response.observe(
-            &binding,
-            self.now,
-            "",
-            if response.exit_code == 7 {
-                "partial"
-            } else {
-                "complete"
-            },
-        );
+        if observed {
+            response.observe(
+                &binding,
+                self.now,
+                "",
+                if response.exit_code == 7 {
+                    "partial"
+                } else {
+                    "complete"
+                },
+            );
+        } else {
+            response.unavailable(&binding, "");
+        }
         Ok(response)
     }
+}
+
+fn find_binding<'a>(bindings: &'a [BundleBinding], name: &str) -> Result<&'a BundleBinding> {
+    let mut matches = bindings.iter().filter(|binding| binding.name == name);
+    let binding = matches
+        .next()
+        .ok_or_else(|| Error::new("BUNDLE_NOT_FOUND", format!("unknown bundle: {name}"), 3))?;
+    if matches.next().is_some() {
+        return Err(Error::new(
+            "AMBIGUOUS_BUNDLE",
+            "alias exists in project and user scopes; select --scope",
+            2,
+        ));
+    }
+    Ok(binding)
 }
 
 fn fits(value: &Value, used: &mut usize, limit: usize) -> bool {
