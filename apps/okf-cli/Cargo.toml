@@ -1,0 +1,20 @@
+[package]
+name = "okf-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "okf"
+path = "src/main.rs"
+
+[dependencies]
+okf-core.workspace = true
+okf-application.workspace = true
+okf-adapters.workspace = true
+clap.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

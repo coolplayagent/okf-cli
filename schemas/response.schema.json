@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/coolplayagent/okf-cli/schemas/response.schema.json",
+  "title": "okf CLI response envelope",
+  "type": "object",
+  "required": ["schema_version", "request_id", "command", "status", "data", "bundles", "page", "budget", "diagnostics", "next"],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "request_id": {"type": "string"},
+    "command": {"type": "string"},
+    "status": {"enum": ["ok", "partial", "error"]},
+    "data": {"type": "object"},
+    "bundles": {"description": "Knowledge bundle read observations.", "type": "array", "items": {"type": "object"}},
+    "page": {
+      "type": "object",
+      "required": ["returned", "total", "has_more", "next_cursor"],
+      "properties": {
+        "returned": {"type": "integer", "minimum": 0},
+        "total": {"type": ["integer", "null"], "minimum": 0},
+        "has_more": {"type": "boolean"},
+        "next_cursor": {"type": ["string", "null"]}
+      }
+    },
+    "budget": {"type": "object"},
+    "diagnostics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code", "message", "path"],
+        "properties": {
+          "code": {"type": "string"},
+          "message": {"type": "string"},
+          "path": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "next": {"type": "array", "items": {"type": "object"}}
+  },
+  "additionalProperties": false
+}
