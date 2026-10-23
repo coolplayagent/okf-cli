@@ -845,3 +845,73 @@ fn broken_link_findings_share_the_per_file_body_warning_limit() {
         assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
     }
 }
+
+#[test]
+fn computation_warnings_are_consistent_and_keep_contracts_consumable() {
+    let f = Fixture::new();
+    f.bind();
+    let raw = "\u{feff}---\r\ntype: Attested Computation\r\nruntime: custom\r\nparameters: [{name: x, type: custom, required: true}, {name: x, type: custom, required: false}]\r\ncomputation: missing/code.py\r\nexecutor: {resource: missing/run.md, receipt: [7]}\r\n---\r\n# Computation\r\n```python\r\nraise RuntimeError('must not execute')\r\n```\r\n\r\n```python\r\nreturn 2\r\n```\r\n";
+    fs::write(f.work.path().join("knowledge/compute.md"), raw).unwrap();
+    let mut expected = None;
+    for args in [
+        vec!["read", "@book/compute"],
+        vec!["browse", "@book"],
+        vec!["search", "compute"],
+        vec!["context", "--query", "compute"],
+        vec!["validate", "book"],
+    ] {
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(0));
+        let response = value(&output);
+        assert_eq!(response["status"], "ok");
+        assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+        let diagnostics = &response["diagnostics"];
+        assert_eq!(diagnostics.as_array().unwrap().len(), 4);
+        if let Some(expected) = &expected {
+            assert_eq!(diagnostics, expected);
+        } else {
+            expected = Some(diagnostics.clone());
+        }
+        for diagnostic in diagnostics.as_array().unwrap() {
+            assert_eq!(diagnostic["severity"], "warning");
+            assert_eq!(diagnostic["path"], "@book/compute.md");
+        }
+        assert_eq!(diagnostics[0]["code"], "DUPLICATE_PARAMETER_NAME");
+        assert_eq!(diagnostics[0]["field"], "/parameters/1/name");
+        assert_eq!(diagnostics[1]["field"], "/executor/receipt/0");
+        for diagnostic in diagnostics.as_array().unwrap().iter().skip(2) {
+            let location = &diagnostic["location"];
+            let start = location["byte_start"].as_u64().unwrap() as usize;
+            let end = location["byte_end"].as_u64().unwrap() as usize;
+            assert!(raw[start..end].starts_with("```python"));
+        }
+        if args[0] == "read" {
+            assert_eq!(response["data"]["document"]["text"], raw);
+        }
+        if args[0] == "validate" {
+            assert_eq!(response["data"]["warnings"], 4);
+            assert_eq!(response["data"]["failures"], 0);
+        }
+    }
+    assert_eq!(
+        fs::read(f.work.path().join("knowledge/compute.md")).unwrap(),
+        raw.as_bytes()
+    );
+}
+
+#[test]
+fn computation_contracts_do_not_fetch_declared_resources_or_restrict_unknown_types() {
+    let f = Fixture::new();
+    f.bind();
+    for raw in [
+        "---\ntype: Attested Computation\nruntime: custom\ncomputation: missing/code.sql\nexecutor: {resource: missing/run.md}\nattester: {resource: https://example.invalid/attest.py}\n---\n",
+        "---\ntype: Unknown Computation\nruntime: []\nparameters: false\nexecutor: null\n---\n# Computation\n```\n```\n",
+    ] {
+        fs::write(f.work.path().join("knowledge/compute.md"), raw).unwrap();
+        let output = f.run(&["validate", "book"]);
+        assert_eq!(output.status.code(), Some(0));
+        let response = value(&output);
+        assert!(response["diagnostics"].as_array().unwrap().is_empty());
+        assert_eq!(response["data"]["failures"], 0);
+    }
+}

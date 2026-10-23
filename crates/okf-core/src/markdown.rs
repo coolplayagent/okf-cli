@@ -162,6 +162,9 @@ impl Markdown {
         let mut image_depth = 0;
         let mut code_block = false;
         let mut link_count = 0;
+        let mut computation = frontmatter
+            .filter(|fm| crate::computation::is_attested(fm))
+            .map(crate::computation::ComputationBody::new);
         let sources: BTreeSet<&str> = frontmatter
             .and_then(|fm| fm.get("sources"))
             .and_then(Value::as_array)
@@ -174,6 +177,9 @@ impl Markdown {
             Parser::new_ext(body, Options::ENABLE_FOOTNOTES | Options::ENABLE_TABLES)
                 .into_offset_iter()
         {
+            if let Some(computation) = &mut computation {
+                computation.event(&event, range.clone());
+            }
             // Undefined footnotes are literal text in GFM. Inspect only contiguous text
             // events so code, HTML, escaped brackets, and images remain excluded.
             if matches!(event, Event::Text(_)) && image_depth == 0 && !code_block {
@@ -268,6 +274,11 @@ impl Markdown {
                         location,
                     ));
                 }
+            }
+        }
+        if let Some(computation) = computation {
+            for diagnostic in computation.finish(document, body_start) {
+                result.warn(diagnostic);
             }
         }
         if result.truncated {
