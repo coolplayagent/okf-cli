@@ -9,8 +9,16 @@
     "request_id": {"type": "string"},
     "command": {"type": "string"},
     "status": {"enum": ["ok", "partial", "error"]},
-    "data": {"type": "object"},
-    "bundles": {"description": "Knowledge bundle read observations.", "type": "array", "items": {"type": "object"}},
+    "data": {"type": "object", "properties": {
+      "generation": {"type": "string"}, "published": {"type": "boolean"},
+      "resource_check": {"type": "object", "required": ["scope", "complete", "external_skipped"], "properties": {
+        "scope": {"const": "bundle_computation_resources"}, "complete": {"type": "boolean"}, "external_skipped": {"type": "integer", "minimum": 0}
+      }}
+    }},
+    "bundles": {"description": "Live or synchronized knowledge views.", "type": "array", "items": {"type": "object", "properties": {
+      "view_kind": {"enum": ["observed", "snapshot"]}, "upstream_revision": {"type": ["string", "null"]},
+      "index_generation": {"type": "string"}, "freshness": {"enum": ["checked", "unknown", "cached"]}
+    }}},
     "page": {
       "type": "object",
       "required": ["returned", "total", "has_more", "next_cursor"],

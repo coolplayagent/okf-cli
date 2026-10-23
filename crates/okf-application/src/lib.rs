@@ -1,5 +1,8 @@
 //! Application use cases depend on ports, never on an OS or storage implementation.
 mod control;
+mod index;
+mod resources;
+pub use index::{Index, IndexedDocument, Snapshot, MAX_INDEX_BYTES};
 mod service;
 use chrono::{DateTime, Utc};
 pub use control::{interrupted, RequestControl, ScanBudget};
@@ -15,12 +18,33 @@ pub struct BundleBinding {
     pub kind: String,
     pub root: String,
     pub scope: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git: Option<GitRevision>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitRevision {
+    pub reference: String,
+    pub commit: String,
+    pub bundle_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote: Option<String>,
 }
 impl BundleBinding {
     /// Configuration changes must not expose historical cards from another root.
     pub fn cache_key(&self) -> String {
         okf_core::sha256(
-            format!("{}\0{}\0{}\0{}", self.id, self.kind, self.root, self.scope).as_bytes(),
+            format!(
+                "{}\0{}\0{}\0{}\0{}",
+                self.id,
+                self.kind,
+                self.root,
+                self.scope,
+                self.git
+                    .as_ref()
+                    .map(|g| format!("{}:{}", g.commit, g.bundle_path))
+                    .unwrap_or_default()
+            )
+            .as_bytes(),
         )
     }
 }
@@ -37,10 +61,36 @@ pub trait BundleRegistry {
     fn list(&self) -> Result<Vec<BundleBinding>>;
     fn add(&self, binding: &BundleBinding) -> Result<()>;
     fn remove(&self, name: &str, scope: &str) -> Result<()>;
+    fn replace(&self, _old: &BundleBinding, _new: &BundleBinding) -> Result<()> {
+        Err(okf_core::Error::new(
+            "UNSUPPORTED_CAPABILITY",
+            "registry update unavailable",
+            2,
+        ))
+    }
 }
 
 pub trait BundleReader {
+    /// Metadata only: never load or execute a declared resource.
+    fn stat(
+        &self,
+        _binding: &BundleBinding,
+        _path: &str,
+        control: &RequestControl,
+    ) -> Result<Option<ResourceMetadata>> {
+        control.check()?;
+        Err(okf_core::Error::new(
+            "UNSUPPORTED_CAPABILITY",
+            "resource metadata is unavailable",
+            2,
+        ))
+    }
     fn probe(&self, binding: &BundleBinding) -> Result<()>;
+    fn probe_controlled(&self, binding: &BundleBinding, control: &RequestControl) -> Result<()> {
+        control.check()?;
+        self.probe(binding)?;
+        control.check()
+    }
     fn list(
         &self,
         binding: &BundleBinding,
@@ -54,6 +104,12 @@ pub trait BundleReader {
         max_bytes: usize,
         control: &RequestControl,
     ) -> Result<String>;
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourceMetadata {
+    pub directory: bool,
+    pub bytes: u64,
 }
 
 #[derive(Debug)]
@@ -137,8 +193,8 @@ impl Response {
     }
     pub fn unavailable(&mut self, binding: &BundleBinding, scope: &str) {
         self.bundles.push(json!({
-            "bundle_id": binding.id, "alias": binding.name, "view_kind": "observed",
-            "upstream_revision": null, "checked_at": null, "freshness": "unknown",
+            "bundle_id": binding.id, "alias": binding.name, "view_kind": if binding.git.is_some() { "snapshot" } else { "observed" },
+            "upstream_revision": binding.git.as_ref().map(|g| &g.commit), "checked_at": null, "freshness": "unknown",
             "coverage": {"scope": scope, "metadata": "unknown", "body": "unknown", "graph": "unknown"}
         }));
     }
@@ -150,8 +206,8 @@ impl Response {
         metadata: &str,
     ) {
         self.bundles.push(json!({
-            "bundle_id": binding.id, "alias": binding.name, "view_kind": "observed",
-            "upstream_revision": null, "checked_at": now.to_rfc3339(), "freshness": "checked",
+            "bundle_id": binding.id, "alias": binding.name, "view_kind": if binding.git.is_some() { "snapshot" } else { "observed" },
+            "upstream_revision": binding.git.as_ref().map(|g| &g.commit), "checked_at": now.to_rfc3339(), "freshness": "checked",
             "coverage": {"scope": scope, "metadata": metadata, "body": "partial", "graph": "partial"}
         }));
     }

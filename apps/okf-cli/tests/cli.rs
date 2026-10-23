@@ -198,7 +198,7 @@ fn remove_preserves_bundle_and_cli_rejects_unimplemented_adapters() {
     f.bind();
     assert_eq!(f.run(&["bundle", "remove", "book"]).status.code(), Some(0));
     assert!(f.work.path().join("knowledge/services/auth.md").exists());
-    let unsupported = f.run(&["bundle", "add", "remote", "--kind", "git"]);
+    let unsupported = f.run(&["bundle", "add", "remote", "--kind", "s3"]);
     assert_eq!(unsupported.status.code(), Some(2));
     assert_eq!(
         value(&unsupported)["data"]["error"]["code"],
@@ -214,8 +214,8 @@ fn argument_errors_and_budget_errors_are_bounded_json() {
     assert_eq!(value(&invalid)["status"], "error");
     f.bind();
     let small = f.run(&["browse", "@book/services", "--budget-bytes", "1"]);
-    assert_eq!(small.status.code(), Some(2));
-    assert_eq!(value(&small)["data"]["error"]["code"], "BUDGET_TOO_SMALL");
+    assert_eq!(small.status.code(), Some(7));
+    assert_eq!(value(&small)["diagnostics"][0]["code"], "CARD_TOO_LARGE");
     let bounded = f.run(&["read", "@book/services/auth", "--max-output-bytes", "1024"]);
     assert!(bounded.stdout.len() <= 1024);
     let _ = value(&bounded);
@@ -865,10 +865,15 @@ fn computation_warnings_are_consistent_and_keep_contracts_consumable() {
         let response = value(&output);
         assert_eq!(response["status"], "ok");
         assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
-        let diagnostics = &response["diagnostics"];
+        let diagnostics = serde_json::json!(response["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] != "MISSING_RESOURCE")
+            .collect::<Vec<_>>());
         assert_eq!(diagnostics.as_array().unwrap().len(), 4);
         if let Some(expected) = &expected {
-            assert_eq!(diagnostics, expected);
+            assert_eq!(&diagnostics, expected);
         } else {
             expected = Some(diagnostics.clone());
         }
@@ -889,7 +894,7 @@ fn computation_warnings_are_consistent_and_keep_contracts_consumable() {
             assert_eq!(response["data"]["document"]["text"], raw);
         }
         if args[0] == "validate" {
-            assert_eq!(response["data"]["warnings"], 4);
+            assert_eq!(response["data"]["warnings"], 6);
             assert_eq!(response["data"]["failures"], 0);
         }
     }
@@ -900,7 +905,8 @@ fn computation_warnings_are_consistent_and_keep_contracts_consumable() {
 }
 
 #[test]
-fn computation_contracts_do_not_fetch_declared_resources_or_restrict_unknown_types() {
+fn computation_contracts_check_local_resources_without_fetching_uris_or_restricting_unknown_types()
+{
     let f = Fixture::new();
     f.bind();
     for raw in [
@@ -911,7 +917,300 @@ fn computation_contracts_do_not_fetch_declared_resources_or_restrict_unknown_typ
         let output = f.run(&["validate", "book"]);
         assert_eq!(output.status.code(), Some(0));
         let response = value(&output);
-        assert!(response["diagnostics"].as_array().unwrap().is_empty());
+        if raw.contains("type: Attested Computation") {
+            assert_eq!(response["diagnostics"].as_array().unwrap().len(), 2);
+            assert!(response["diagnostics"].as_array().unwrap().iter().all(|d| d["code"] == "MISSING_RESOURCE"));
+            assert_eq!(response["data"]["resource_check"]["external_skipped"], 1);
+        } else {
+            assert!(response["diagnostics"].as_array().unwrap().is_empty());
+        }
         assert_eq!(response["data"]["failures"], 0);
     }
+}
+
+#[test]
+fn resource_checks_are_root_relative_bounded_and_do_not_execute_or_decode_assets() {
+    let f = Fixture::new();
+    f.bind();
+    fs::create_dir_all(f.work.path().join("knowledge/assets")).unwrap();
+    fs::write(f.work.path().join("knowledge/assets/code.py"), [0xff, 0x00]).unwrap();
+    fs::write(f.work.path().join("knowledge/services/compute.md"),"---\ntype: Attested Computation\nruntime: python\ncomputation: assets/code.py\nexecutor: {resource: assets}\nattester: {resource: missing.py}\n---\n").unwrap();
+    let output = f.run(&["validate", "book"]);
+    assert_eq!(output.status.code(), Some(0));
+    let response = value(&output);
+    assert_eq!(response["data"]["resource_check"]["complete"], true);
+    assert_eq!(response["budget"]["resources_checked"], 3);
+    let diagnostics = response["diagnostics"].as_array().unwrap();
+    assert!(diagnostics
+        .iter()
+        .any(|d| d["code"] == "RESOURCE_NOT_A_FILE" && d["field"] == "/executor/resource"));
+    assert!(diagnostics
+        .iter()
+        .any(|d| d["code"] == "MISSING_RESOURCE" && d["field"] == "/attester/resource"));
+    let output = f.run(&["validate", "book", "--max-resources", "1"]);
+    assert_eq!(output.status.code(), Some(7));
+    let response = value(&output);
+    assert_eq!(response["data"]["resource_check"]["complete"], false);
+    assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+    assert_eq!(response["budget"]["resources_checked"], 1);
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "RESOURCE_LIMIT"));
+}
+
+#[test]
+fn oversized_cards_do_not_hide_later_results_and_have_consistent_diagnostics() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(
+        f.work.path().join("knowledge/services/aaa.md"),
+        format!(
+            "---\ntype: Service\ntitle: {}\n---\n",
+            "oversize".repeat(1000)
+        ),
+    )
+    .unwrap();
+    for args in [
+        vec!["browse", "@book/services", "--budget-bytes", "2048"],
+        vec!["search", "Service", "--budget-bytes", "2048"],
+        vec!["context", "--query", "Service", "--budget-bytes", "2048"],
+    ] {
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(7));
+        let response = value(&output);
+        assert!(response["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "services/billing"));
+        assert!(response["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "CARD_TOO_LARGE" && d["path"] == "@book/services/aaa.md"));
+    }
+}
+
+#[test]
+fn cache_recovery_command_works_when_database_cannot_be_opened() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(f.home.path().join("index.sqlite"), b"broken").unwrap();
+    let output = f.run(&["cache", "reset"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(
+        Path::new(value(&output)["data"]["archive"].as_str().unwrap())
+            .join("index.sqlite")
+            .exists()
+    );
+    assert_eq!(
+        f.run(&["read", "@book/services/auth"]).status.code(),
+        Some(0)
+    );
+    assert!(f.work.path().join("knowledge/services/auth.md").exists());
+}
+
+#[test]
+fn indexed_search_and_context_preserve_citations_offline_and_failed_sync_preserves_old_generation()
+{
+    let f = Fixture::new();
+    f.bind();
+    let path = f.work.path().join("knowledge/services/auth.md");
+    let original = fs::read_to_string(&path).unwrap();
+    let synced = value(&f.run(&["sync", "book"]));
+    assert_eq!(synced["data"]["published"], true);
+    let generation = synced["data"]["generation"].clone();
+    let live = value(&f.run(&["search", "每秒"]));
+    assert_eq!(live["page"]["returned"], 0);
+    for args in [
+        vec!["search", "每秒", "--bundle", "book", "--full-text"],
+        vec![
+            "context",
+            "--query",
+            "每秒",
+            "--bundle",
+            "book",
+            "--content",
+        ],
+    ] {
+        let output = f.run(&args);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let response = value(&output);
+        let item = &response["data"]["items"][0];
+        assert_eq!(item["expiry"], "expired");
+        assert_eq!(item["generation"], generation);
+        let snippet = &item["snippet"];
+        let start = snippet["byte_start"].as_u64().unwrap() as usize;
+        let end = snippet["byte_end"].as_u64().unwrap() as usize;
+        assert_eq!(snippet["text"], &original[start..end]);
+        assert_eq!(
+            item["content_sha256"],
+            okf_core::sha256(original.as_bytes())
+        );
+        assert_eq!(response["bundles"][0]["freshness"], "cached");
+    }
+    fs::write(&path, "---\ntype: Service\n---\nchanged").unwrap();
+    let output = f.run(&["sync", "book", "--max-scan", "1"]);
+    assert_eq!(output.status.code(), Some(7));
+    assert_eq!(value(&output)["data"]["published"], false);
+    assert_eq!(
+        value(&f.run(&["index", "status", "book"]))["data"]["generation"],
+        generation
+    );
+    fs::rename(
+        f.work.path().join("knowledge"),
+        f.work.path().join("offline"),
+    )
+    .unwrap();
+    fs::write(
+        f.home.path().join("index.sqlite"),
+        b"corrupt unrelated observation cache",
+    )
+    .unwrap();
+    let output = f.run(&["read", "@book/services/auth", "--indexed"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(value(&output)["data"]["document"]["text"], original);
+    assert_eq!(
+        f.run(&["search", "每秒", "--bundle", "book", "--full-text"])
+            .status
+            .code(),
+        Some(0)
+    );
+    assert_eq!(f.run(&["index", "clear", "book"]).status.code(), Some(0));
+    assert_eq!(
+        f.run(&["read", "@book/services/auth", "--indexed"])
+            .status
+            .code(),
+        Some(3)
+    );
+}
+
+#[test]
+fn indexed_cursor_rejects_new_generation_and_sync_removes_deleted_documents() {
+    let f = Fixture::new();
+    f.bind();
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+    let first = value(&f.run(&[
+        "read",
+        "@book/services/auth",
+        "--indexed",
+        "--budget-bytes",
+        "17",
+    ]));
+    let cursor = first["page"]["next_cursor"].as_str().unwrap();
+    let generation = first["data"]["document"]["generation"].as_str().unwrap();
+    fs::remove_file(f.work.path().join("knowledge/services/billing.md")).unwrap();
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+    assert_eq!(
+        f.run(&[
+            "read",
+            "@book/services/auth",
+            "--indexed",
+            "--cursor",
+            cursor
+        ])
+        .status
+        .code(),
+        Some(6)
+    );
+    assert_eq!(
+        f.run(&["read", "@book/services/billing", "--indexed"])
+            .status
+            .code(),
+        Some(3)
+    );
+    assert_eq!(
+        f.run(&[
+            "read",
+            "@book/services/auth",
+            "--indexed",
+            "--generation",
+            generation
+        ])
+        .status
+        .code(),
+        Some(6)
+    );
+}
+
+#[test]
+fn git_cli_refresh_keeps_old_pages_until_explicit_refresh_and_failed_refresh_preserves_binding() {
+    let f = Fixture::new();
+    let git = |args: &[&str]| {
+        let output = Command::new(std::env::var_os("OKF_GIT").unwrap_or_else(|| "git".into()))
+            .current_dir(f.work.path())
+            .args([
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    git(&["init", "--initial-branch=main"]);
+    git(&["add", "knowledge"]);
+    git(&["commit", "-m", "first"]);
+    let output = f.run(&[
+        "bundle",
+        "add",
+        "book",
+        "--kind",
+        "git",
+        "--path",
+        ".",
+        "--ref",
+        "main",
+        "--bundle-path",
+        "knowledge",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let pinned = value(&output)["data"]["bundle"]["git"]["commit"].clone();
+    let first = value(&f.run(&["read", "@book/services/auth", "--budget-bytes", "17"]));
+    let cursor = first["page"]["next_cursor"].as_str().unwrap();
+    fs::write(
+        f.work.path().join("knowledge/services/auth.md"),
+        "---\ntype: Service\n---\nnew",
+    )
+    .unwrap();
+    git(&["add", "knowledge"]);
+    git(&["commit", "-m", "second"]);
+    let continued = f.run(&["read", "@book/services/auth", "--cursor", cursor]);
+    assert_eq!(continued.status.code(), Some(0));
+    assert_eq!(value(&continued)["bundles"][0]["upstream_revision"], pinned);
+    assert_eq!(value(&continued)["bundles"][0]["view_kind"], "snapshot");
+    assert_eq!(f.run(&["bundle", "refresh", "book"]).status.code(), Some(0));
+    assert_eq!(
+        f.run(&["read", "@book/services/auth", "--cursor", cursor])
+            .status
+            .code(),
+        Some(6)
+    );
+    git(&["branch", "-m", "renamed"]);
+    let before = value(&f.run(&["bundle", "show", "book"]));
+    assert_ne!(f.run(&["bundle", "refresh", "book"]).status.code(), Some(0));
+    assert_eq!(
+        value(&f.run(&["bundle", "show", "book"]))["data"],
+        before["data"]
+    );
 }

@@ -93,13 +93,50 @@ impl ConfigRegistry {
             fs::create_dir_all(parent).map_err(Error::io)?;
         }
         let lock = path.with_extension("lock");
-        fs::OpenOptions::new().write(true).create_new(true).open(&lock)
-            .map_err(|e| Error::new("CONFIG_LOCKED", format!("cannot lock {}: {e}; remove a stale lock only after confirming no writer is active", lock.display()), 5))?;
-        Ok(ConfigLock(lock))
+        let mut file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock)
+            .map_err(Error::io)?;
+        file.try_lock().map_err(|e| {
+            Error::new(
+                "CONFIG_LOCKED",
+                format!(
+                    "cannot acquire operating-system lock {}: {e}",
+                    lock.display()
+                ),
+                5,
+            )
+        })?;
+        file.set_len(0).map_err(Error::io)?;
+        writeln!(file, "pid={}", std::process::id()).map_err(Error::io)?;
+        Ok(ConfigLock(file))
     }
 }
 
 impl BundleRegistry for ConfigRegistry {
+    fn replace(&self, old: &BundleBinding, new: &BundleBinding) -> Result<()> {
+        let path = self.path(&old.scope)?;
+        let _lock = self.lock(&path)?;
+        let mut config = self.load(&old.scope)?;
+        let stored = config
+            .bundles
+            .iter_mut()
+            .find(|b| b.name == old.name && b.id == old.id)
+            .ok_or_else(|| Error::new("BUNDLE_NOT_FOUND", "binding removed during refresh", 3))?;
+        if stored.git.as_ref().map(|g| &g.commit) != old.git.as_ref().map(|g| &g.commit) {
+            return Err(Error::new(
+                "REVISION_CHANGED",
+                "binding refreshed concurrently",
+                6,
+            ));
+        }
+        // Refresh changes only the pinned revision; preserve the stored relative root.
+        stored.git = new.git.clone();
+        self.save(&path, &config)
+    }
     fn list(&self) -> Result<Vec<BundleBinding>> {
         let mut bindings = vec![];
         for scope in ["project", "user"] {
@@ -170,9 +207,11 @@ impl BundleRegistry for ConfigRegistry {
     }
 }
 
-struct ConfigLock(PathBuf);
+// Keep the lock inode: deleting it allows another process to lock a different file.
+// The OS releases ownership on process exit, including crashes.
+struct ConfigLock(fs::File);
 impl Drop for ConfigLock {
     fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
+        let _ = self.0.set_len(0);
     }
 }

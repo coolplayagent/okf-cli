@@ -45,6 +45,53 @@ impl Filesystem {
 }
 
 impl BundleReader for Filesystem {
+    fn stat(
+        &self,
+        binding: &BundleBinding,
+        path: &str,
+        control: &RequestControl,
+    ) -> Result<Option<okf_application::ResourceMetadata>> {
+        control.check()?;
+        logical_path(path)?;
+        let root = Self::root(binding)?;
+        // Walk components so a missing leaf cannot hide an escaping parent link.
+        let mut actual = root.clone();
+        for part in path.split('/').filter(|part| !part.is_empty()) {
+            control.check()?;
+            actual.push(part);
+            let link = match fs::symlink_metadata(&actual) {
+                Ok(meta) => meta,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+                Err(e) => return Err(map_io(e)),
+            };
+            let resolved = fs::canonicalize(&actual).map_err(map_io)?;
+            if !resolved.starts_with(&root) {
+                return Err(Error::new("PATH_ESCAPE", "resource escapes bundle root", 4));
+            }
+            let meta = fs::metadata(&resolved).map_err(map_io)?;
+            if meta.is_dir() && (link.file_type().is_symlink() || resolved != actual) {
+                return Err(Error::new(
+                    "DIRECTORY_LINK",
+                    "resource traverses a directory link",
+                    4,
+                ));
+            }
+            actual = resolved;
+        }
+        let meta = fs::metadata(actual).map_err(map_io)?;
+        control.check()?;
+        if !meta.is_file() && !meta.is_dir() {
+            return Err(Error::new(
+                "NOT_A_FILE",
+                "resource is not a regular file",
+                3,
+            ));
+        }
+        Ok(Some(okf_application::ResourceMetadata {
+            directory: meta.is_dir(),
+            bytes: meta.len(),
+        }))
+    }
     fn probe(&self, binding: &BundleBinding) -> Result<()> {
         Self::root(binding).map(|_| ())
     }

@@ -1,0 +1,35 @@
+name: Package binaries
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace --all-targets --release --locked
+      - run: cargo build --release --locked -p okf-cli
+      - if: runner.os != 'Windows'
+        run: |
+          python scripts/smoke.py target/release/okf
+          python scripts/package.py target/release/okf
+      - if: runner.os == 'Windows'
+        run: |
+          python scripts/smoke.py target/release/okf.exe
+          python scripts/package.py target/release/okf.exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: okf-cli-${{ runner.os }}-${{ runner.arch }}
+          path: target/dist/*

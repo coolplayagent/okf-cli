@@ -9,6 +9,9 @@
 | `bundle add NAME --path PATH [--kind fs]` | 检查目录并保存知识包绑定 |
 | `bundle list` / `bundle show NAME` | 查看知识包绑定配置 |
 | `bundle remove NAME` | 解除绑定，保留知识包文件 |
+| `bundle add NAME --kind git --path REPO --ref REF --bundle-path PATH` | 保存固定 commit 的 Git 知识包 |
+| `bundle add NAME --kind git --url HTTPS_URL [--ref REF]` | 获取公开 HTTPS 仓库；不能同时传入 `--path` |
+| `bundle refresh NAME` | 解析 Git ref 后原子替换提交，失败保留旧绑定 |
 | `context [--bundle NAME]` | 返回知识包概览与目录入口 |
 | `context --query QUERY [--bundle NAME]` | 返回元数据候选与原文读取入口 |
 | `browse REF` | 展开一层目录 |
@@ -16,13 +19,19 @@
 | `search QUERY [--bundle NAME]` | 检索 ID、标题、摘要、标签和类型 |
 | `status [NAME]` | 查看已观测元数据的缓存统计 |
 | `validate NAME` | 检查知识包中的概念与保留文件 |
+| `sync NAME` | 完整扫描后事务发布正文索引 |
+| `search QUERY --bundle NAME --full-text` | 检索同步索引的元数据与正文，返回原文片段 |
+| `context --query QUERY --bundle NAME --content` | 从同步索引选择较大的原文上下文窗口 |
+| `read REF --indexed [--generation GENERATION]` | 离线读取索引原文，可要求与检索结果版本一致 |
+| `index status NAME` / `index clear NAME` | 查看或清理正文索引 |
+| `cache reset` | 归档观测数据库及 sidecar 后重建，活动读取者存在时拒绝 |
 | `doctor` | 查看版本、运行目录、项目目录、知识包数量和缓存可用性 |
 | `skill install PATH` | 将内置消费 Skill 写入指定目录 |
 | `help [COMMAND]` / `--help` | 显示文本帮助 |
 
-`--bundle` 可重复使用，适用于概览和检索。未指定时选择已绑定的全部知识包。同名项目与用户知识包绑定必须通过 `--scope` 区分。`context` 和 `search` 没有知识包时返回 `NO_BUNDLES`，不会自动扫描当前目录寻找知识包。
+概览与元数据检索的 `--bundle` 可重复使用，未指定时选择已绑定的全部知识包。全文检索和正文上下文要求恰好一个 `--bundle`。同名项目与用户知识包绑定必须通过 `--scope` 区分。`context` 和 `search` 没有知识包时返回 `NO_BUNDLES`，不会自动扫描当前目录寻找知识包。
 
-别名长度为 1–64 个 ASCII 字符，只能包含字母、数字、`-` 和 `_`。存储类型支持 `fs`，其他类型返回 `UNSUPPORTED_CAPABILITY`。
+别名长度为 1–64 个 ASCII 字符，只能包含字母、数字、`-` 和 `_`。存储类型支持 `fs` 与 `git`，其他类型返回 `UNSUPPORTED_CAPABILITY`。
 
 知识包、概念、来源与绑定别名的定义见 [领域术语](architecture.md#领域术语)。配置中的 `bundles` 保存绑定，响应中的同名字段保存读取观测；概念的 `sources` 专指依据材料。
 
@@ -53,7 +62,7 @@
 
 ## 预算与分页
 
-各命令只接受下表列出的选项，不适用的选项返回参数错误。单元格给出默认值，`—` 表示不接受该选项。
+下表列出各命令支持的通用预算与分页选项，不适用的选项返回参数错误。单元格给出默认值，`—` 表示不接受该选项。
 
 | 命令 | `--limit` | `--budget-bytes` | `--max-scan` | `--cursor` | `--timeout-ms` |
 | --- | --- | --- | --- | --- | --- |
@@ -63,12 +72,15 @@
 | `read` | — | 65536 | — | 可选 | 30000 |
 | `search` | 20 | 16384 | 100 | — | 30000 |
 | `validate` | — | — | 100 | — | 30000 |
+| `sync` | — | — | 100 | — | 30000 |
+
+`--full-text`、`--content` 和 `--indexed` 沿用对应命令的预算与分页参数。全文检索的 `--max-scan` 限制评估的概念数量，`indexed_documents_scanned` 返回实际数量。单包索引总正文上限 64 MiB。`validate --max-resources N` 控制资源声明数量，默认 4096，允许 1–10000；声明字符串另有 2 MiB 总上限。
 
 取值范围：`--limit` 为 1–100，`--budget-bytes` 为 1–65536，`--max-scan` 为 1–10000，`--timeout-ms` 为 1–3600000 毫秒。
 
-原文预算计算返回文本的 UTF-8 字节数，条目预算计算序列化条目字节数；完整响应另外受 `--max-output-bytes` 限制。原文按 Unicode 字符边界分页，放不下下一个字符时返回 `BUDGET_TOO_SMALL`。浏览放不下首个条目时同样报错；搜索跳过超出预算的卡片并报告 `CARD_TOO_LARGE`，概览预算不足时报告 `BUDGET_EXCEEDED`。
+原文预算计算返回文本的 UTF-8 字节数，条目预算计算序列化条目字节数；完整响应另外受 `--max-output-bytes` 限制。原文按 Unicode 字符边界分页，放不下下一个字符时返回 `BUDGET_TOO_SMALL`。浏览、元数据搜索及候选上下文跳过单张超过整个预算的卡片，附带路径和 `CARD_TOO_LARGE`，继续返回其他条目；浏览的剩余预算放不下下一张正常卡片时分页。概览预算不足时报告 `BUDGET_EXCEEDED`。
 
-扫描预算在文件系统适配器内扣减：打开一个目录计一次，每次推进目录迭代器计一次，包括非 Markdown 文件与确认目录结束的那一步。所有目录共用本次请求的预算，不会先列举整个目录再截断。`budget.scan_limit` 和 `budget.scanned_entries` 返回上限与实际计数。单文件读取上限为 2 MiB。
+扫描预算在文件系统适配器内扣减：打开一个目录计一次，每次推进目录迭代器计一次，包括非 Markdown 文件与确认目录结束的那一步。文件系统的所有目录共用本次请求的预算，不会先列举整个目录再截断。Git 列举先读取有大小上限的 tree 输出，再按条目扣减扫描预算。`budget.scan_limit` 和 `budget.scanned_entries` 返回上限与实际计数。单文件读取上限为 2 MiB。
 
 目录清单按路径排序，分页 cursor 校验完整清单的修订。列举预算不足时，`browse` 返回已观测条目的部分结果、`SCAN_LIMIT` 和退出码 7，不生成 cursor；应提高 `--max-scan` 后重新浏览。带 cursor 的请求无法在预算内重建完整清单时返回 `SCAN_LIMIT` 错误，不使用不完整清单验证修订。
 
@@ -84,19 +96,25 @@
 
 查询按空白拆词，忽略大小写，并要求所有词都在卡片的检索字段中出现。支持中文子串，结果按知识包引用排序。`context --query` 复用元数据检索，返回 `disclosure: metadata_candidates` 与 `read` 入口。
 
+全文模式要求每个词出现在卡片或正文中，元数据命中每词计 5 分、仅正文命中每词计 1 分，同分按引用排序。它是确定性子串检索，未使用向量或分词模型。结果的 `snippet` 含原始字节范围与文本，普通片段最多 512 字节，正文上下文最多 4096 字节，均受整体条目预算约束。上下文优先从命中行之前最近的标题开始，标题距命中过远时从命中字节位置开始。`coverage_gaps` 表达未选命中和未检查实时文件的事实。
+
+`sync` 只在完整、无结构错误的扫描后发布 generation；取消、预算不足或文件错误均保留旧索引。并发发布基于旧 generation 比较，冲突返回 `INDEX_CHANGED`（6）。`read --indexed` 的 cursor 绑定 generation；`--generation` 可在首个分页就拒绝过时的检索引用。索引视图的 `freshness` 为 `cached`，`checked_at` 为同步时间；本地文件索引仍是观测视图。`matches_binding_revision` 对 Git 表示索引提交是否等于当前绑定提交，对文件系统不证明源文件未变。
+
 卡片中的 `trust`、`status` 和 `expiry` 从元数据派生。审核层级为 `unverified`、`machine-confirmed` 或 `human-reviewed`；过期状态为 `unspecified`、`current`、`expired` 或 `unknown`。默认值与异常值的处理见 [派生与覆盖](okf-validation.md#派生与覆盖)。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
 
 ## 故障与覆盖
 
 浏览或检索遇到坏概念、文件读取失败时，返回带路径的诊断和部分结果，继续处理可用条目。多知识包概览和检索隔离知识包故障，保留其他包的结果；单知识包初始目录不可读时返回错误。未开始读取、探测失败或未能展开目录的包使用 `freshness: unknown`、`checked_at: null` 与未知覆盖状态。
 
-除 Skill 安装外，业务命令会尝试打开 SQLite 缓存。消费命令遇到缓存故障时保留可读内容：写入失败使用 `CACHE_WRITE_FAILED`，打开失败且本次操作没有尝试写入卡片时使用 `CACHE_UNAVAILABLE`。配置管理、`status` 和 `doctor` 保留缓存错误。
+实时读取命令会尝试打开 SQLite 观测缓存。消费命令遇到缓存故障时保留可读内容：写入失败使用 `CACHE_WRITE_FAILED`，打开失败且本次操作没有尝试写入卡片时使用 `CACHE_UNAVAILABLE`。索引命令使用独立数据库，不依赖观测缓存。`cache reset` 在不打开损坏数据库的情况下归档重建。配置写入使用系统锁，进程退出后自动释放；锁文件应保留。
 
 缓存问题与知识文件覆盖分别表达，完整校验发现的文档错误优先于缓存诊断。`SCAN_LIMIT` 仅用于扫描预算耗尽，文件故障或取消不会被标为预算不足。
 
 `validate` 返回 `data.link_check`，其中 `scope` 为 `bundle_markdown_targets`，`complete` 为布尔值。它说明包内 Markdown 链接与目录目标检查是否完成；扫描未完成时跳过目标存在性判断，读取失败、链接预算耗尽、正文收集或警告截断，以及取消都会使其为 false。它不表示目标全部有效或关系图已建立，检查范围见 [正文链接与来源脚注](okf-validation.md#正文链接与来源脚注)。
 
 `budget.link_limit` 与 `link_bytes_limit` 给出待检查链接的数量、字符串字节上限；`links_checked` 是实际检查的链接数，`link_bytes_used` 是保留链接占用的字符串字节数。`LINK_LIMIT` 返回退出码 7，链接阶段取消或预算耗尽均保留已完成的元数据覆盖。具体上限见 [诊断上限](okf-validation.md#诊断上限)。
+
+计算资源检查独立返回 `data.resource_check`，范围为 `bundle_computation_resources`。缺失文件或目录类型不符产生字段级警告；权限、越界、查询失败使用操作诊断和部分结果。查询预算耗尽为 `RESOURCE_LIMIT`（7），不降低已完成的元数据扫描覆盖。外部 URI 仅计入 `external_skipped`，不访问。`resources_checked`、`resource_limit`、`resource_bytes_used`、`resource_bytes_limit` 给出预算。
 
 ## JSON 响应
 
@@ -115,7 +133,7 @@
 | `diagnostics` | 诊断 code、severity、message、path、field 和可选 location |
 | `next` | 建议的后续操作、目标和可选 cursor |
 
-读取视图为 `observed`，上游修订为 null。`metadata` 覆盖状态必须结合 `coverage.scope` 解读：单文件、单目录与全知识包扫描不是同一范围。`body`、`graph` 是保守的覆盖声明，不能解释成离线正文或关系图已经建立。
+文件系统读取视图为 `observed`，上游修订为 null；Git 视图为 `snapshot`，`upstream_revision` 是完整 commit ID。Git 原文、卡片与 cursor 均携带或绑定提交。`metadata` 覆盖状态必须结合 `coverage.scope` 解读：单文件、单目录与全知识包扫描不是同一范围。实时命令的 `body`、`graph` 是保守覆盖声明；索引的完整正文覆盖仅描述已发布的索引版本。
 
 `page.total` 可以为 null；`has_more=false` 只说明该操作没有续页，不证明全库扫描完整。卡片返回也不意味着 Agent 已读取正文。
 
@@ -135,11 +153,11 @@
 | 3 | 知识包、目录或文件不存在 |
 | 4 | 访问被拒绝、路径越界或目录链接被拒绝 |
 | 5 | I/O、缓存或配置锁错误 |
-| 6 | 读取期间内容变化或分页修订已变化 |
+| 6 | 读取期间内容变化、分页修订变化或索引发布版本冲突 |
 | 7 | 部分结果、资源超限、截止时间或取消 |
 
 完整合规检查发现错误时为 `status: error`、退出码 1，缓存不可用诊断不会覆盖这个结果；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。文件过大和输出超限也使用退出码 7，但响应为 `error`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
 
-`validate` 返回 `data.failures` 与 `data.warnings`，分别统计失败文件与返回的元数据及正文警告。只有警告且扫描完成时仍为 `ok`、退出码 0。
+`validate` 返回 `data.failures` 与 `data.warnings`，分别统计失败文件与返回的元数据、正文及资源警告。只有警告且检查完成时仍为 `ok`、退出码 0。
 
 Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际读取的文件、字节范围和内容哈希，并保留影响答案的过期、审核和覆盖限定。消费流程见 [消费 Skill](../skills/okf-consume/SKILL.md)。
