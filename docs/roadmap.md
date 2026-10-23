@@ -4,7 +4,7 @@
 
 ## OKF 诊断与本地读取完善
 
-- 增加 `Attested Computation` 合同诊断，复用正文解析和路径规则；实现时扩充 [检查矩阵](okf-validation.md)。
+- 为 `computation`、`executor.resource`、`attester.resource` 增加包内资源检查。先扩展读取端口的文件元信息查询能力，再复用路径规则和独立的资源查询预算。
 - 明确片段锚点的生成约定，再扩展锚点与普通附件检查。
 - 统一过大卡片的处理规则，完善配置锁恢复与缓存修复流程。
 

@@ -106,6 +106,94 @@ struct Check {
 }
 
 impl Check {
+    fn computation(&mut self, frontmatter: &Map<String, Value>) {
+        self.string(frontmatter.get("runtime"), "/runtime", true);
+        if let Some(parameters) = frontmatter.get("parameters") {
+            if let Some(parameters) = parameters.as_array() {
+                let mut names = BTreeSet::new();
+                for (index, parameter) in parameters.iter().enumerate() {
+                    let field = format!("/parameters/{index}");
+                    let Some(parameter) = parameter.as_object() else {
+                        self.warn(
+                            "INVALID_METADATA_TYPE",
+                            &field,
+                            "expected a parameter object",
+                        );
+                        continue;
+                    };
+                    for name in ["name", "type"] {
+                        self.string(parameter.get(name), &format!("{field}/{name}"), true);
+                    }
+                    match parameter.get("required") {
+                        None => self.warn(
+                            "MISSING_METADATA_FIELD",
+                            &format!("{field}/required"),
+                            "parameter must declare whether it is required",
+                        ),
+                        Some(value) if !value.is_boolean() => self.warn(
+                            "INVALID_METADATA_TYPE",
+                            &format!("{field}/required"),
+                            "expected a boolean",
+                        ),
+                        _ => {}
+                    }
+                    if let Some(name) = parameter
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.trim().is_empty())
+                    {
+                        if !names.insert(name) {
+                            self.warn(
+                                "DUPLICATE_PARAMETER_NAME",
+                                &format!("{field}/name"),
+                                "parameter names should be unique within a computation",
+                            );
+                        }
+                    }
+                }
+            } else {
+                self.warn(
+                    "INVALID_METADATA_TYPE",
+                    "/parameters",
+                    "expected a list of parameters",
+                );
+            }
+        }
+        if let Some(value) = frontmatter.get("computation") {
+            self.string(Some(value), "/computation", true);
+        }
+        for name in ["executor", "attester"] {
+            let Some(value) = frontmatter.get(name) else {
+                continue;
+            };
+            let field = format!("/{name}");
+            let Some(object) = value.as_object() else {
+                self.warn(
+                    "INVALID_METADATA_TYPE",
+                    &field,
+                    "expected a resource object",
+                );
+                continue;
+            };
+            self.string(object.get("resource"), &format!("{field}/resource"), true);
+            if name == "executor" {
+                if let Some(receipt) = object.get("receipt") {
+                    if let Some(fields) = receipt.as_array() {
+                        for (index, value) in fields.iter().enumerate() {
+                            self.string(Some(value), &format!("{field}/receipt/{index}"), true);
+                        }
+                    } else {
+                        self.warn(
+                            "INVALID_METADATA_TYPE",
+                            &format!("{field}/receipt"),
+                            "expected a list of receipt field names",
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     fn warn(&mut self, code: &str, field: &str, message: &str) {
         if self.warnings.len() < MAX_WARNINGS {
             self.warnings
@@ -319,6 +407,9 @@ pub(crate) fn diagnostics(frontmatter: &Map<String, Value>, path: &str) -> Vec<D
         }
     }
     check.datetime(frontmatter.get("stale_after"), "/stale_after", false);
+    if crate::computation::is_attested(frontmatter) {
+        check.computation(frontmatter);
+    }
     for warning in &mut check.warnings {
         warning.path = Some(path.into());
     }

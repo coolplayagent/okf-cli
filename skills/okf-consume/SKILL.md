@@ -23,6 +23,7 @@ Exit codes: 0 success; 1 validation findings; 2 arguments/configuration; 3 missi
 
 Handle execution diagnostics alongside the returned coverage:
 
+- For `Attested Computation`, read the contract and its `# Computation` content or file declaration. Static validation reports definition issues; per-run receipt verification requires a separate execution and attestation workflow.
 - Metadata and body `warning` diagnostics do not invalidate a concept or make a request partial. Use `path` with the JSON Pointer `field` or original-file byte `location` to locate findings. Preserve relevant qualifications when using the knowledge. `validate` checks link targets only after complete enumeration; inspect `data.link_check.complete` before interpreting the absence of broken-link warnings.
 - `CANCELLED` or `DEADLINE_EXCEEDED`: use completed results with their stated limits. Do not automatically retry a user cancellation. Consumption commands accept `--timeout-ms N`, defaulting to 30000, and cooperate with Ctrl+C.
 - `SCAN_LIMIT` on browse: increase `--max-scan` and restart. An incomplete directory listing has no continuation cursor.

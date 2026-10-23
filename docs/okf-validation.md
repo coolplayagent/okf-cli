@@ -4,7 +4,7 @@
 
 ## 诊断与消费
 
-`read`、`browse`、`search`、`context --query` 和 `validate` 使用相同的元数据规则。
+`read`、`browse`、`search`、`context --query` 和 `validate` 共用元数据与正文诊断规则。包内链接目标的存在性与文件类型仅由 `validate` 检查。
 
 - `error` 表示结构不合规或操作故障，是否终止请求由命令决定。例如浏览跳过坏概念并返回部分结果，显式 `read --raw` 可以返回带结构错误诊断的原文。
 - `warning` 表示元数据或正文中的质量建议，包括来源归因问题与断链。警告不拒绝概念、不改变退出码，也不降低元数据覆盖。
@@ -57,13 +57,52 @@
 
 按需读取仅检查当前文件，不访问链接目标；`validate` 复用完整目录清单检查目标。保留文件参与链接检查，但不要求来源 frontmatter。正文位置的响应格式见 [JSON 响应](cli-contract.md#json-响应)。
 
+## 计算合同与正文
+
+仅对 `type: Attested Computation` 启用以下检查，依据为规范 §10.2、§10.3。未知类型的同名扩展字段保持原样；runtime 和参数类型名称均不限定枚举。
+
+| 检查对象 | 规则 | 诊断 |
+| --- | --- | --- |
+| `runtime` | 此类型需要给出非空字符串 | 通用字段缺失、类型或取值警告 |
+| `parameters` | 可省略或为空列表；出现时每项为对象，包含非空字符串 `name`、`type` 和布尔值 `required` | 通用字段警告；重名使用 `DUPLICATE_PARAMETER_NAME` |
+| `computation` | 出现时为非空文件路径或 URI 字符串 | 通用字段警告 |
+| `executor`、`attester` | 出现时为对象，内部 `resource` 为非空字符串 | 通用字段警告 |
+| `executor.receipt` | 出现时为非空字段名字符串组成的列表，可为空列表 | 通用字段警告 |
+| 计算内容缺失 | 未声明 `computation` 时，需要内联计算块 | `MISSING_COMPUTATION` |
+| 两种形式并存 | 已声明 `computation`，正文仍有内联计算块 | `CONFLICTING_COMPUTATION` |
+| 多个内联计算块 | 计算章节内包含多个围栏代码块 | `MULTIPLE_COMPUTATIONS` |
+| 空计算块 | 内联计算块仅含空白 | `EMPTY_COMPUTATION` |
+
+内联计算使用顶层一级标题（H1）`Computation` 章节内的单个非空围栏代码块，章节持续到下一个顶层 H1。标题按 Markdown 可见文本匹配，区分大小写、忽略两端空白，包含行内格式和图片替代文本；换行保留词间边界。
+
+子标题不会结束计算章节，其中的围栏代码块仍计入计算块数量。章节之外的示例代码，以及引用块、列表、脚注和代码中的标题不作为计算入口。缩进代码块不满足围栏代码块约定。
+
+最小内联形式：
+
+````markdown
+---
+type: Attested Computation
+runtime: python
+---
+# Computation
+```python
+result = 1 + 1
+```
+````
+
+使用文件形式时，在 frontmatter 中声明 `computation: calculations/total.py`，并省略内联计算块。
+
+字段问题通过 JSON Pointer 定位，计算正文问题使用原文件字节范围。文件声明本身不合法时报告字段问题，避免再附加缺少内联计算的级联警告。所有计算诊断均为质量警告，与其他元数据和正文警告共用相应上限。
+
+静态检查不读取声明资源，也不执行计算或核验 Receipt。有效的静态合同不表示某次运行已通过 attestation；能力边界见 [实现状态](implementation-status.md#已知边界)。
+
 ## 诊断上限
 
 | 范围 | 上限 | 超出时的诊断 | 影响 |
 | --- | --- | --- | --- |
 | 每份概念的元数据警告 | 64 条 | `METADATA_DIAGNOSTICS_TRUNCATED` | 追加一条截断警告，元数据覆盖保持不变 |
 | 每份文件的链接与脚注引用收集 | 各 256 个 | `BODY_DIAGNOSTICS_TRUNCATED` | 追加一条截断警告，链接检查完整性为 false |
-| 每份文件的正文警告 | 64 条，路径、脚注与断链共用 | `BODY_DIAGNOSTICS_TRUNCATED` | 每份文件最多追加一条截断警告，链接检查完整性为 false |
+| 每份文件的正文警告 | 64 条，路径、脚注、计算正文与断链共用 | `BODY_DIAGNOSTICS_TRUNCATED` | 每份文件最多追加一条截断警告，链接检查完整性为 false |
 | `validate` 保留的待检查链接 | 4096 条或 2 MiB 字符串总字节 | `LINK_LIMIT` | 返回部分结果与退出码 7，保留已完成的元数据覆盖 |
 
 元数据和正文的警告上限分别计数；截断提示不占各自的 64 条限额。整个响应还受输出字节上限约束，`validate` 的预算字段与检查完整性见 [CLI 参考](cli-contract.md#故障与覆盖)。
@@ -75,5 +114,7 @@
 [固定样例](../crates/okf-core/tests/fixtures/metadata-cases.json) 记录规范版本、输入元数据、预期诊断和派生结果。元数据验证应覆盖字段形状、单对象与列表等价、时区与到期边界，以及警告与结构错误并存。
 
 [正文测试](../crates/okf-core/tests/markdown.rs) 覆盖路径解析、引用式链接、代码排除与来源 ID 关联。CLI 验收还应检查文件与目录类型、混合警告共用上限、扫描及链接检查阶段取消，以及分页中的诊断位置始终相对于原文件。读取前后核对源文件字节与哈希。
+
+[计算合同样例](../crates/okf-core/tests/fixtures/computation-cases.json) 覆盖合同字段、未知 runtime、零参数、内联与文件形式、章节边界、标题可见文本及空正文定位。核对各消费命令返回相同诊断，且警告不影响消费、元数据覆盖和原文字节；正文与元数据警告分别验证共享上限。
 
 可使用 [okf-skills 校验器](https://github.com/scaccogatto/okf-skills/blob/49f8fb4987989b7a443ce278c6aa68ba0493b51f/skills/validate/scripts/okf_validate.py) 交叉核对默认模式下的结构合规结果。参考工具会提示部分推荐字段缺失，并采用不同的时间、来源和链接建议策略；本项目的警告策略以本矩阵为准，不要求警告条数一致。
