@@ -428,6 +428,16 @@ impl App<'_> {
         selected: &[String],
         options: &ReadOptions,
     ) -> Result<Response> {
+        self.search_filtered(query, selected, options, &crate::SearchFilter::default())
+    }
+
+    pub fn search_filtered(
+        &self,
+        query: &str,
+        selected: &[String],
+        options: &ReadOptions,
+        filter: &crate::SearchFilter,
+    ) -> Result<Response> {
         if query.trim().is_empty() {
             return Err(Error::new("EMPTY_QUERY", "query must not be empty", 2));
         }
@@ -517,7 +527,8 @@ impl App<'_> {
                             card["type"]
                         )
                         .to_lowercase();
-                        if terms.iter().all(|term| haystack.contains(term)) {
+                        if filter.matches(&card) && terms.iter().all(|term| haystack.contains(term))
+                        {
                             match_count += 1;
                             if card.to_string().len() > options.budget {
                                 complete = false;
@@ -570,14 +581,16 @@ impl App<'_> {
     }
 
     pub fn validate(&self, name: &str, options: &ReadOptions) -> Result<Response> {
-        self.validate_with_resources(name, options, 4096)
+        self.validate_with_checks(name, options, 4096, false, false)
     }
 
-    pub fn validate_with_resources(
+    pub fn validate_with_checks(
         &self,
         name: &str,
         options: &ReadOptions,
         resource_limit: usize,
+        attachments: bool,
+        anchors: bool,
     ) -> Result<Response> {
         let binding = self.binding(name)?;
         let mut response = Response::new("validate", json!({"concepts": 0, "checked": 0}));
@@ -592,6 +605,14 @@ impl App<'_> {
         let mut link_bytes = 0;
         let mut body_warnings = BTreeMap::<String, BodyWarningState>::new();
         let mut resources = crate::resources::Resources::new(resource_limit);
+        let mut sections = BTreeMap::new();
+        let mut section_bytes = 0;
+        let mut anchors_complete = true;
+        let mut anchors_limited = false;
+        let mut attachments_complete = true;
+        let mut anchors_checked = 0;
+        let mut anchors_skipped = 0;
+        let mut attachments_checked = 0;
         'scan: while let Some(directory) = queue.pop_front() {
             let listing = match self.reader.list(&binding, &directory, &mut scan) {
                 Ok(listing) => listing,
@@ -637,6 +658,26 @@ impl App<'_> {
                                 self.markdown(&binding, &entry.path, &raw, Some(&doc)),
                             )
                         };
+                        if anchors {
+                            let body_start =
+                                okf_core::frontmatter(&raw).map_or(0, |(_, start)| start);
+                            let parsed = okf_core::sections::Sections::parse(&raw, body_start);
+                            let bytes = entry.path.len()
+                                + parsed
+                                    .headings
+                                    .iter()
+                                    .map(|h| h.anchor.len() + 64)
+                                    .sum::<usize>();
+                            if bytes <= MAX_VALIDATION_LINK_BYTES - section_bytes {
+                                section_bytes += bytes;
+                                anchors_complete &= parsed.complete;
+                                anchors_limited |= !parsed.complete;
+                                sections.insert(entry.path.clone(), parsed);
+                            } else {
+                                anchors_complete = false;
+                                anchors_limited = true;
+                            }
+                        }
                         let count = markdown
                             .diagnostics
                             .iter()
@@ -655,7 +696,7 @@ impl App<'_> {
                         for link in markdown.links {
                             let (path, fragment) = match &link.target {
                                 LinkTarget::Internal { path, fragment }
-                                    if link.bundle_path().is_some() =>
+                                    if link.bundle_path().is_some() || attachments =>
                                 {
                                     (path, fragment)
                                 }
@@ -711,23 +752,80 @@ impl App<'_> {
                     response.issue(&error, &format!("@{}", binding.name));
                     break;
                 }
-                if let Some(target) = link.bundle_path() {
-                    links_checked += 1;
-                    let exists = if target.is_empty() {
-                        link.directory
-                    } else {
-                        existing.get(target) == Some(&link.directory)
-                    };
-                    if !exists {
-                        let state = body_warnings.entry(path.clone()).or_default();
-                        if state.count < MAX_BODY_WARNINGS {
-                            state.count += 1;
-                            response.diagnostics.push(body_warning(
+                if let LinkTarget::Internal {
+                    path: target,
+                    fragment,
+                } = &link.target
+                {
+                    let mut finding = None;
+                    if link.bundle_path().is_some() {
+                        links_checked += 1;
+                        let exists = if target.is_empty() {
+                            link.directory
+                        } else {
+                            existing.get(target) == Some(&link.directory)
+                        };
+                        if !exists {
+                            finding = Some((
                                 "BROKEN_LINK",
                                 format!(
                                     "bundle link target missing or wrong file type: {}",
                                     link.destination
                                 ),
+                            ));
+                        } else if anchors && !link.directory {
+                            if let Some(fragment) = fragment {
+                                match sections
+                                    .get(target)
+                                    .and_then(|s| s.contains_anchor(fragment))
+                                {
+                                    Some(true) => anchors_checked += 1,
+                                    Some(false) => {
+                                        anchors_checked += 1;
+                                        finding = Some((
+                                            "MISSING_ANCHOR",
+                                            format!(
+                                                "heading anchor absent under headings-v1: {}",
+                                                link.destination
+                                            ),
+                                        ));
+                                    }
+                                    None => {
+                                        anchors_skipped += 1;
+                                        anchors_complete = false;
+                                    }
+                                }
+                            }
+                        }
+                    } else if attachments {
+                        attachments_checked += 1;
+                        match self.reader.stat(&binding, target, self.control) {
+                            Ok(Some(meta)) if !meta.directory => {}
+                            Ok(_) => {
+                                finding = Some((
+                                    "MISSING_ATTACHMENT",
+                                    format!(
+                                        "attachment missing or not a file: {}",
+                                        link.destination
+                                    ),
+                                ))
+                            }
+                            Err(error) => {
+                                attachments_complete = false;
+                                response.issue(&error, &format!("@{}/{}", binding.name, path));
+                                if interrupted(&error) {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some((code, message)) = finding {
+                        let state = body_warnings.entry(path.clone()).or_default();
+                        if state.count < MAX_BODY_WARNINGS {
+                            state.count += 1;
+                            response.diagnostics.push(body_warning(
+                                code,
+                                message,
                                 &format!("@{}/{}", binding.name, path),
                                 link.location.clone(),
                             ));
@@ -748,6 +846,19 @@ impl App<'_> {
                 "validation link count or byte limit reached; select a smaller bundle",
             );
         }
+        if anchors && anchors_limited {
+            response.partial("ANCHOR_LIMIT", "heading inventory limit reached");
+        }
+        let checks_complete = complete
+            && failures == 0
+            && !links_truncated
+            && !body_warnings.values().any(|state| state.truncated);
+        if anchors {
+            response.data["anchor_check"] = json!({"profile":"headings-v1","complete":checks_complete && anchors_complete,"checked":anchors_checked,"skipped":anchors_skipped});
+        }
+        if attachments {
+            response.data["attachment_check"] = json!({"scope":"bundle_body_links","complete":checks_complete && attachments_complete,"checked":attachments_checked,"images_included":false});
+        }
         response.data["failures"] = json!(failures);
         if let Err(error) = self.control.check() {
             complete = false;
@@ -757,7 +868,8 @@ impl App<'_> {
         }
         response.budget = json!({"scan_limit": options.max_scan, "scanned_entries": scan.used(),
             "link_limit": MAX_VALIDATION_LINKS, "links_checked": links_checked,
-            "link_bytes_limit": MAX_VALIDATION_LINK_BYTES, "link_bytes_used": link_bytes});
+            "link_bytes_limit": MAX_VALIDATION_LINK_BYTES, "link_bytes_used": link_bytes,
+            "anchor_bytes_limit": MAX_VALIDATION_LINK_BYTES, "anchor_bytes_used":section_bytes});
         response.data["link_check"] = json!({
             "scope": "bundle_markdown_targets",
             "complete": complete && failures == 0 && !links_truncated && !body_warnings.values().any(|state| state.truncated)

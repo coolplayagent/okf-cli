@@ -1,6 +1,6 @@
 # okf-cli
 
-面向 Agent 的 [Open Knowledge Format（OKF）](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md) 知识读取工具。注册知识包，通过概览、目录、检索和原文读取逐步获取任务所需的知识。
+面向 Agent 的 [Open Knowledge Format（OKF）](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md) 知识消费 CLI。注册知识包，通过概览、目录、检索和原文读取逐步获取任务所需的知识。
 
 知识包内容保持只读，读取结果提供知识包、文件定位和后续导航，便于 Agent 继续探索和引用。
 
@@ -80,6 +80,8 @@ okf search "认证" --bundle handbook --full-text --format json
 okf context --query "认证" --bundle handbook --content --format json
 okf read @handbook/services/auth --indexed --format json
 okf index status handbook
+okf search "认证" --bundle handbook --full-text --type Service --tag security
+okf neighbors @handbook/services/auth --direction incoming --format json
 ```
 
 全文检索与上下文选择当前每次指定一个知识包；结果标注索引 generation、内容哈希和原文字节范围。离线索引代表上次成功同步的内容。扫描不完整时不会替换旧索引。
@@ -117,18 +119,26 @@ cargo test --workspace --all-targets --release --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Git 测试需要 Git。固定版本的上游语料位于 `fixtures/upstream`，普通测试不联网。性能基线与打包验证：
+Git 测试需要 Git。交付验证的 Python 依赖仅用于开发与 CI，CLI 运行时不需要 Python：
+
+```sh
+python -m pip install -r scripts/requirements-test.txt
+cargo build --release --locked -p okf-cli
+python scripts/check_delivery.py target/release/okf
+python scripts/evaluate.py target/release/okf target/verification/retrieval-1000.json --scale 1000
+```
+
+`check_delivery.py` 校验响应 Schema、本地 HTTPS Git 流程与故障、检索任务，并生成发行包、核对哈希，在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
+
+固定版本的上游语料位于 `fixtures/upstream`。需要单独测量性能基线时执行：
 
 ```sh
 cargo run --release --locked -p okf-adapters --example baseline -- fixtures/upstream
-python scripts/smoke.py target/release/okf
-python scripts/acceptance.py target/release/okf
-python scripts/package.py target/release/okf
 ```
 
 Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含校验和，位于 `target/dist`；工作流仅生成构建产物。
 
-`acceptance.py` 在临时目录中逐文件验证上游语料的实时与离线读取，并检查 Unicode 分页、索引版本失效和缓存损坏恢复；不修改原始语料，也不访问网络。
+上游语料验收在临时目录中检查实时与离线读取、Unicode 分页、索引版本失效和缓存损坏恢复，原始语料保持不变。最近验证结果见 [实现状态](docs/implementation-status.md#最近验证)。
 
 ## 文档
 
@@ -137,6 +147,7 @@ Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含�
 - [OKF 检查矩阵](docs/okf-validation.md)：规范依据、诊断级别和字段定位。
 - [实现状态](docs/implementation-status.md)：功能范围、行为边界和验证方法。
 - [性能基线](docs/performance.md)：固定上游语料、测量方法与结果边界。
+- [检索任务评测](docs/retrieval-evaluation.md)：预期证据、章节选择、调用量与内存测量。
 - [实施计划](docs/roadmap.md)：剩余工作与验收目标。
 
 ## 许可证

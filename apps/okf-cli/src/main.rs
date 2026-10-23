@@ -74,6 +74,8 @@ enum Command {
         content: bool,
         #[command(flatten)]
         page: ContextArgs,
+        #[command(flatten)]
+        filters: FilterArgs,
     },
     /// Expand one directory. Reserved index text is available through read.
     Browse {
@@ -104,15 +106,31 @@ enum Command {
         full_text: bool,
         #[command(flatten)]
         page: SearchArgs,
+        #[command(flatten)]
+        filters: FilterArgs,
     },
     Status {
         name: Option<String>,
+    },
+    /// Read evidenced incoming/outgoing links from a synchronized index.
+    Neighbors {
+        reference: String,
+        #[arg(long, default_value = "both", value_parser = ["both", "incoming", "outgoing"])]
+        direction: String,
+        #[command(flatten)]
+        page: SearchArgs,
     },
     Validate {
         name: String,
         /// Maximum collected computation resource declarations (metadata queries only).
         #[arg(long, default_value_t = 4096, value_parser = parse_scan)]
         max_resources: usize,
+        /// Check non-Markdown body-link targets using metadata only (images excluded).
+        #[arg(long)]
+        attachments: bool,
+        /// Opt in to a deterministic heading-ID profile; custom HTML remains unknown.
+        #[arg(long, value_parser = ["headings-v1"])]
+        anchor_style: Option<String>,
         #[command(flatten)]
         page: ScanArgs,
     },
@@ -152,6 +170,11 @@ enum BundleCommand {
         reference: Option<String>,
         #[arg(long)]
         bundle_path: Option<String>,
+        /// Sampled object-cache byte budget for public HTTPS fetches.
+        #[arg(long)]
+        max_git_bytes: Option<u64>,
+        #[command(flatten)]
+        work: WorkArgs,
     },
     List,
     Show {
@@ -163,6 +186,18 @@ enum BundleCommand {
     /// Resolve the configured Git ref and atomically publish its new commit.
     Refresh {
         name: String,
+        #[arg(long, default_value_t = 268435456)]
+        max_git_bytes: u64,
+        #[command(flatten)]
+        work: WorkArgs,
+    },
+    /// Inspect or compact a managed remote object cache, retaining historical objects.
+    Cache {
+        name: String,
+        #[arg(long)]
+        compact: bool,
+        #[command(flatten)]
+        work: WorkArgs,
     },
 }
 
@@ -180,6 +215,31 @@ enum CacheCommand {
 enum IndexCommand {
     Status { name: String },
     Clear { name: String },
+}
+
+#[derive(Args, Default)]
+struct FilterArgs {
+    /// Exact type match; repeat for alternatives.
+    #[arg(long = "type")]
+    types: Vec<String>,
+    /// Exact tag match; repeat for alternatives.
+    #[arg(long = "tag")]
+    tags: Vec<String>,
+    /// Exact lifecycle status match; repeat for alternatives.
+    #[arg(long = "status")]
+    statuses: Vec<String>,
+}
+impl FilterArgs {
+    fn value(&self) -> okf_application::SearchFilter {
+        okf_application::SearchFilter {
+            types: self.types.clone(),
+            tags: self.tags.clone(),
+            statuses: self.statuses.clone(),
+        }
+    }
+    fn is_empty(&self) -> bool {
+        self.types.is_empty() && self.tags.is_empty() && self.statuses.is_empty()
+    }
 }
 
 #[derive(Args)]
@@ -293,11 +353,15 @@ impl Command {
             Self::Browse { page, .. } => Some(page.search.scan.work.timeout_ms),
             Self::Read { page, .. } => Some(page.work.timeout_ms),
             Self::Search { page, .. } => Some(page.scan.work.timeout_ms),
+            Self::Neighbors { page, .. } => Some(page.scan.work.timeout_ms),
             Self::Validate { page, .. } => Some(page.work.timeout_ms),
             Self::Sync { page, .. } => Some(page.work.timeout_ms),
             Self::Bundle {
-                command: BundleCommand::Refresh { .. } | BundleCommand::Add { .. },
-            } => Some(30_000),
+                command:
+                    BundleCommand::Refresh { work, .. }
+                    | BundleCommand::Add { work, .. }
+                    | BundleCommand::Cache { work, .. },
+            } => Some(work.timeout_ms),
             _ => None,
         }
     }
@@ -388,6 +452,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
     let index_operation = matches!(
         &cli.command,
         Command::Sync { .. }
+            | Command::Neighbors { .. }
             | Command::Index { .. }
             | Command::Read { indexed: true, .. }
             | Command::Search {
@@ -435,6 +500,8 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 url,
                 reference,
                 bundle_path,
+                max_git_bytes,
+                work: _,
             } => {
                 if name.is_empty()
                     || name.len() > 64
@@ -457,7 +524,12 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                         2,
                     ));
                 }
-                if kind == "fs" && (url.is_some() || reference.is_some() || bundle_path.is_some()) {
+                if kind == "fs"
+                    && (url.is_some()
+                        || reference.is_some()
+                        || bundle_path.is_some()
+                        || max_git_bytes.is_some())
+                {
                     return Err(Error::new(
                         "INVALID_ARGUMENT",
                         "--url, --ref and --bundle-path require --kind git",
@@ -496,11 +568,24 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     scope: scope.into(),
                     git: None,
                 };
+                let _git_guard = if url.is_some() {
+                    Some(Git::lock(&root)?)
+                } else {
+                    None
+                };
                 if kind == "git" {
                     let requested = reference.as_deref().unwrap_or("HEAD");
                     let fetched = url
                         .as_ref()
-                        .map(|url| Git::fetch(&root, url, requested, control))
+                        .map(|url| {
+                            Git::fetch_bounded(
+                                &root,
+                                url,
+                                requested,
+                                control,
+                                max_git_bytes.unwrap_or(268435456),
+                            )
+                        })
                         .transpose()?;
                     let mut revision = Git::pin(
                         &root,
@@ -536,7 +621,39 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     json!({"removed": name, "bundle_content_deleted": false}),
                 ))
             }
-            BundleCommand::Refresh { name } => {
+            BundleCommand::Cache { name, compact, .. } => {
+                let binding = app.binding(name)?;
+                if binding
+                    .git
+                    .as_ref()
+                    .and_then(|g| g.remote.as_ref())
+                    .is_none()
+                {
+                    return Err(Error::new(
+                        "UNSUPPORTED_CAPABILITY",
+                        "cache maintenance requires a managed remote binding",
+                        2,
+                    ));
+                }
+                let managed = std::fs::canonicalize(home.join("git")).map_err(Error::io)?;
+                let root = std::fs::canonicalize(&binding.root).map_err(Error::io)?;
+                if root.parent() != Some(managed.as_path()) {
+                    return Err(Error::new(
+                        "UNSUPPORTED_CAPABILITY",
+                        "cache is outside the managed runtime directory",
+                        2,
+                    ));
+                }
+                Ok(Response::new(
+                    "bundle cache",
+                    Git::cache(&root, *compact, control)?,
+                ))
+            }
+            BundleCommand::Refresh {
+                name,
+                max_git_bytes,
+                ..
+            } => {
                 let old = app.binding(name)?;
                 let git = old
                     .git
@@ -550,10 +667,17 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                         )
                     })?;
                 let root = std::path::Path::new(&old.root);
+                let _git_guard = if git.remote.is_some() {
+                    Some(Git::lock(root)?)
+                } else {
+                    None
+                };
                 let fetched = git
                     .remote
                     .as_ref()
-                    .map(|url| Git::fetch(root, url, &git.reference, control))
+                    .map(|url| {
+                        Git::fetch_bounded(root, url, &git.reference, control, *max_git_bytes)
+                    })
                     .transpose()?;
                 let mut revision = Git::pin(
                     root,
@@ -577,6 +701,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             query,
             page,
             content,
+            filters,
         } => {
             if *content {
                 if bundles.len() != 1 {
@@ -586,16 +711,18 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                         2,
                     ));
                 }
-                return app.indexed_search(
+                return app.indexed_search_filtered(
                     query.as_deref().unwrap_or(""),
                     &bundles[0],
                     &page.options(),
                     &SqliteIndex::open(&home.join("content.sqlite"))?,
                     true,
+                    &filters.value(),
                 );
             }
             if let Some(query) = query {
-                let mut response = app.search(query, bundles, &page.options())?;
+                let mut response =
+                    app.search_filtered(query, bundles, &page.options(), &filters.value())?;
                 response.command = "context".into();
                 response.data["disclosure"] = json!("metadata_candidates");
                 if let Some(items) = response.data["items"].as_array() {
@@ -607,10 +734,27 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 }
                 Ok(response)
             } else {
+                if !filters.is_empty() {
+                    return Err(Error::new(
+                        "INVALID_ARGUMENT",
+                        "metadata filters require --query",
+                        2,
+                    ));
+                }
                 app.context(bundles, &page.options())
             }
         }
         Command::Browse { reference, page } => app.browse(reference, &page.options()),
+        Command::Neighbors {
+            reference,
+            direction,
+            page,
+        } => app.neighbors(
+            reference,
+            direction,
+            &page.options(),
+            &SqliteIndex::open(&home.join("content.sqlite"))?,
+        ),
         Command::Read {
             reference,
             raw,
@@ -643,6 +787,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             bundles,
             page,
             full_text,
+            filters,
         } => {
             if *full_text {
                 if bundles.len() != 1 {
@@ -652,15 +797,16 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                         2,
                     ));
                 }
-                app.indexed_search(
+                app.indexed_search_filtered(
                     query,
                     &bundles[0],
                     &page.options(),
                     &SqliteIndex::open(&home.join("content.sqlite"))?,
                     false,
+                    &filters.value(),
                 )
             } else {
-                app.search(query, bundles, &page.options())
+                app.search_filtered(query, bundles, &page.options(), &filters.value())
             }
         }
         Command::Sync { name, page } => app.sync(
@@ -687,7 +833,9 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             name,
             page,
             max_resources,
-        } => app.validate_with_resources(
+            attachments,
+            anchor_style,
+        } => app.validate_with_checks(
             name,
             &ReadOptions {
                 limit: 0,
@@ -696,6 +844,8 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 cursor: None,
             },
             *max_resources,
+            *attachments,
+            anchor_style.is_some(),
         ),
         Command::Status { name } => {
             let bindings = if let Some(name) = name {
