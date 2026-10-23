@@ -80,10 +80,21 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
 
         do_POST = do_GET
 
-    server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     tls.load_cert_chain(root / 'cert.pem', root / 'key.pem')
-    server.socket = tls.wrap_socket(server.socket, server_side=True)
+    class TLSServer(http.server.ThreadingHTTPServer):
+        def finish_request(self, request, client_address):
+            # Handshake in the worker, not accept(): cancelled Git connections
+            # must not block the listener and stall later fault-test requests.
+            request.settimeout(10)
+            try:
+                connection = tls.wrap_socket(request, server_side=True)
+            except (ssl.SSLError, ConnectionError, TimeoutError):
+                return
+            with connection:
+                self.RequestHandlerClass(connection, client_address, self)
+
+    server = TLSServer(('127.0.0.1', 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     url = f'https://localhost:{server.server_port}/repo.git'
