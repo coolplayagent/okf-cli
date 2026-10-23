@@ -1,6 +1,6 @@
 # 产品与架构
 
-okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元数据候选和原文读取。本文描述代码中的模块与数据流；命令行为见 [CLI 参考](cli-contract.md)，后续能力见 [实施计划](roadmap.md)。
+okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元数据候选、正文检索和原文读取。本文描述代码中的模块与数据流；命令行为见 [CLI 参考](cli-contract.md)，后续能力见 [实施计划](roadmap.md)。
 
 ## 领域术语
 
@@ -29,8 +29,8 @@ okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元
 | 模块 | 职责 |
 | --- | --- |
 | `crates/okf-core` | 逻辑路径、YAML frontmatter、Markdown 链接与脚注、元数据与计算合同诊断、保留文件检查、概念卡片、生命周期、SHA-256、UTF-8 字节分页和 cursor 编解码 |
-| `crates/okf-application` | 知识包选择、概览、浏览、原文读取、元数据搜索和合规检查；定义 `BundleRegistry`、`BundleReader`、`Cache` 端口 |
-| `crates/okf-adapters` | 文件系统读取、TOML 配置和 SQLite 元数据缓存 |
+| `crates/okf-application` | 知识包选择、读取、诊断、同步、检索与上下文选择；定义 `BundleRegistry`、`BundleReader`、`Cache`、`Index` 端口 |
+| `crates/okf-adapters` | 文件系统与 Git 对象读取、TOML 配置、SQLite 观测缓存与独立正文索引 |
 | `apps/okf-cli` | 参数校验、依赖组装、取消信号、JSON 输出、输出上限和退出码 |
 | `skills/okf-consume` | 指导 Agent 调用 CLI、处理覆盖状态和引用原文 |
 | `schemas` | 响应 envelope 的 JSON Schema |
@@ -40,13 +40,14 @@ flowchart TD
     Agent[Agent 与消费 Skill] --> CLI[CLI]
     CLI --> App[应用服务]
     CLI --> Adapters[适配器]
-    Adapters --> Ports[BundleRegistry / BundleReader / Cache]
+    Adapters --> Ports[BundleRegistry / BundleReader / Cache / Index]
     App --> Ports
     App --> Core[核心模型]
     Adapters --> Core
     Adapters --> FS[知识包目录]
     Adapters --> Config[TOML 绑定配置]
-    Adapters --> DB[SQLite 元数据]
+    Adapters --> Git[Git tree/blob]
+    Adapters --> DB[SQLite 观测缓存与正文索引]
 ```
 
 核心不执行文件系统、数据库或时钟 I/O。应用通过端口访问知识包和缓存，读取时间与请求控制对象由 CLI 注入。`RequestControl` 使用单调时钟检查截止时间并共享取消信号；`ScanBudget` 在目录打开和迭代器推进前扣减预算。适配器通过 `Listing.complete` 声明列举是否完整，应用决定分页和响应内容。
@@ -55,11 +56,11 @@ flowchart TD
 
 1. CLI 解析参数，确定运行目录、项目根目录及配置作用域。
 2. 应用从一次配置读取中选择知识包并检查别名歧义；同名绑定要求显式选择作用域。
-3. 文件系统适配器检查真实路径是否位于知识包根目录内。
-4. 应用按命令生成知识包概览、目录卡片、搜索候选或原文分页。
-5. 读取概念元数据时更新缓存，CLI 序列化响应并检查输出上限。
+3. 实时模式通过适配器读取文件系统或固定 Git 提交；索引模式加载已发布 generation。
+4. 应用按命令生成概览、目录卡片、搜索候选、正文片段或原文分页。
+5. 实时读取概念元数据时更新观测缓存；CLI 序列化响应并检查输出上限。
 
-`context` 探测知识包根目录，`browse` 返回一层目录条目及已发现的作者索引引用。`search` 扫描元数据；`context --query` 复用检索并追加 `read` 入口。原文由 `read` 显式获取。
+`context` 探测知识包根目录，`browse` 返回一层目录条目及已发现的作者索引引用。默认 `search` 扫描元数据，`context --query` 复用检索并追加 `read` 入口。`search --full-text` 与 `context --query --content` 从正文索引选择原文片段；`read --indexed` 可离线继续读取同一 generation。
 
 ## 文件与模型
 
@@ -77,11 +78,17 @@ flowchart TD
 
 ## 配置与缓存
 
-项目配置位于 `.okf-cli/config.toml`，用户配置位于运行目录的 `config.toml`。项目根目录沿当前路径向上查找项目配置或 `.git`；项目内的知识包保存相对路径。配置写入使用独占锁文件和临时文件原子替换。
+项目配置位于 `.okf-cli/config.toml`，用户配置位于运行目录的 `config.toml`。项目根目录沿当前路径向上查找项目配置或 `.git`；项目内的知识包保存相对路径。配置写入使用系统文件锁和临时文件原子替换。锁文件保持原 inode，进程退出时由系统释放锁。
 
-SQLite 位于运行目录的 `index.sqlite`。`cards` 表按知识包缓存键与文件路径记录内容哈希、卡片 JSON 和观测时间。知识包绑定 ID、类型、根路径及作用域共同参与缓存隔离。
+SQLite 位于运行目录的 `index.sqlite`。`cards` 表按知识包缓存键与文件路径记录内容哈希、卡片 JSON 和观测时间。知识包绑定 ID、类型、根路径及作用域共同参与缓存隔离；Git 缓存键还包含 commit 与包根。
 
 缓存是历史观测记录，`status` 只统计卡片数量和最近观测时间。浏览与搜索仍检查知识包文件；缓存不保存正文，也不承担离线读取或全库完整性判断。
+
+正文索引独立存于 `content.sqlite`，通过 `Index` 端口访问。`sync` 完整扫描并核对内容哈希后，以旧 generation 为比较条件，在事务内更新正文、删除消失条目、发布新 generation；扫描失败不发布。查询与正文读取在同一个数据库读取事务中加载索引视图，保留字节、哈希、观测时间与 Git commit。索引不依赖卡片观测缓存。
+
+Git 绑定保存仓库位置、包根、请求 ref 和已解析 commit。普通读取只访问固定 commit 的 tree/blob；刷新成功后原子替换绑定中的提交。cursor 同时绑定提交和内容修订。远端获取使用独立引用，避免并发获取互相覆盖；不检出、不调用工作区过滤器、不跟随符号链接或 gitlink。
+
+`BundleReader::stat` 为计算声明资源提供元信息查询。资源收集具有独立数量与字节预算，其覆盖与 Markdown 链接覆盖分别表达。
 
 浏览与检索按条目隔离读取故障，多知识包概览与检索按知识包隔离故障。缓存故障保留已读取内容并附诊断；取消与截止时间停止后续读取。响应分别表达执行结果、知识包覆盖范围与缓存诊断，具体规则见 [CLI 参考](cli-contract.md#故障与覆盖)。
 
@@ -91,6 +98,6 @@ SQLite 位于运行目录的 `index.sqlite`。`cards` 表按知识包缓存键�
 
 文件系统读取会检查规范化真实路径、文件类型、大小以及读取前后的大小和修改时间。目录遍历拒绝越界路径、目录符号链接、Junction 和大小写碰撞。
 
-读取视图标记为 `observed`。目录 cursor 校验条目清单的 stat 指纹，原文 cursor 校验完整文件 SHA-256；知识包、操作、目标或版本不匹配时拒绝继续。目录指纹不能检测所有同大小、同修改时间的内容替换，因此不构成固定快照。
+文件系统读取视图标记为 `observed`。目录 cursor 校验条目清单的 stat 指纹，原文 cursor 校验完整文件 SHA-256；知识包、操作、目标或版本不匹配时拒绝继续。目录指纹不能检测所有同大小、同修改时间的内容替换，因此不构成固定快照。Git 视图为 `snapshot`，cursor 额外绑定 commit 与包根；索引分页绑定已发布 generation。
 
 具体资源上限与失败语义见 [CLI 参考](cli-contract.md)。

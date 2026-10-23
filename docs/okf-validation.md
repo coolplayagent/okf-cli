@@ -94,7 +94,16 @@ result = 1 + 1
 
 字段问题通过 JSON Pointer 定位，计算正文问题使用原文件字节范围。文件声明本身不合法时报告字段问题，避免再附加缺少内联计算的级联警告。所有计算诊断均为质量警告，与其他元数据和正文警告共用相应上限。
 
-静态检查不读取声明资源，也不执行计算或核验 Receipt。有效的静态合同不表示某次运行已通过 attestation；能力边界见 [实现状态](implementation-status.md#已知边界)。
+按需读取不访问声明资源。`validate` 对 `computation`、`executor.resource`、`attester.resource` 执行元信息查询，不读取资源内容、执行计算或核验 Receipt。路径相对于知识包根目录，外部 URI 跳过；`sources[].resource` 不参与此检查。
+
+| 资源诊断 | 含义 |
+| --- | --- |
+| `MISSING_RESOURCE` | 包内声明文件不存在，字段级 warning |
+| `RESOURCE_NOT_A_FILE` | 资源实际为目录，字段级 warning |
+| `INVALID_RESOURCE_PATH` | 声明路径不能安全归一化，字段级 warning |
+| `RESOURCE_LIMIT` | 资源数量或字符串预算耗尽，partial / 7 |
+
+访问被拒绝、路径越界或适配器故障保留原操作诊断，并使资源检查覆盖不完整。资源检查与 Markdown 链接检查分别报告覆盖；目录扫描不完整时仍可报告已显式查询的资源是否存在。每份计算定义最多三个资源字段警告，与元数据/正文上限分别计数。有效静态合同不表示某次运行已通过 attestation。
 
 ## 诊断上限
 

@@ -1,6 +1,10 @@
 mod config;
 mod filesystem;
+mod git;
+mod index;
+pub use index::SqliteIndex;
 mod sqlite;
 pub use config::{default_home, ConfigRegistry};
 pub use filesystem::Filesystem;
+pub use git::{Git, Readers};
 pub use sqlite::SqliteCache;

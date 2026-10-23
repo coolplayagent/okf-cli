@@ -1,0 +1,376 @@
+[
+  {
+    "name": "google",
+    "repository": "https://github.com/GoogleCloudPlatform/open-knowledge-format",
+    "commit": "ad30107c31c06aec8a7d5636e0d1058118604e6f",
+    "bundle": "bundles/ga4",
+    "files": [
+      {
+        "path": "google/LICENSE.md",
+        "source_path": "LICENSE.md",
+        "sha256": "8c6db340475136df3c1201d458fa5755698eace76e510471ecc9d857d6083dac"
+      },
+      {
+        "path": "google/bundle/datasets/ga4_obfuscated_sample_ecommerce.md",
+        "source_path": "bundles/ga4/datasets/ga4_obfuscated_sample_ecommerce.md",
+        "sha256": "a8ae74f4040553b1571d72c96d26653e00702b1c85581176f3ae638a2c90191e"
+      },
+      {
+        "path": "google/bundle/datasets/index.md",
+        "source_path": "bundles/ga4/datasets/index.md",
+        "sha256": "f1fd3a751ee6dc68a7691ab59c9150848ebdfc6a49a2353dba8e3b8fac09bf9f"
+      },
+      {
+        "path": "google/bundle/index.md",
+        "source_path": "bundles/ga4/index.md",
+        "sha256": "d6eed548e707e356ea12bc4d8fb797a0669ba4f570eff8530f32bf56d8867f28"
+      },
+      {
+        "path": "google/bundle/references/index.md",
+        "source_path": "bundles/ga4/references/index.md",
+        "sha256": "085edc6e6ea8998bb1ea0d63e36041196a78e89aa685b7315165f6a1c9ccf817"
+      },
+      {
+        "path": "google/bundle/references/metrics/acquired_users.md",
+        "source_path": "bundles/ga4/references/metrics/acquired_users.md",
+        "sha256": "ec75c1a4e685e22ef0a6a1e276d969d5580ddf06323a6c4d9143700b00f4892a"
+      },
+      {
+        "path": "google/bundle/references/metrics/frequently_active_users.md",
+        "source_path": "bundles/ga4/references/metrics/frequently_active_users.md",
+        "sha256": "7472d92619d892cf94cbe1c8ad9bce67bd555c11ec9f7fde7b886f914b907ab2"
+      },
+      {
+        "path": "google/bundle/references/metrics/google_acquired_cohorts.md",
+        "source_path": "bundles/ga4/references/metrics/google_acquired_cohorts.md",
+        "sha256": "8d4065d422184d05a97543c5fb8816b1a2d3e153760cdaf4bfac4559965636c6"
+      },
+      {
+        "path": "google/bundle/references/metrics/highly_active_users.md",
+        "source_path": "bundles/ga4/references/metrics/highly_active_users.md",
+        "sha256": "99dbb6bbad8a0899b0d98d26894714b358fbb66e3b86af65f23805d5b4e2d8ef"
+      },
+      {
+        "path": "google/bundle/references/metrics/index.md",
+        "source_path": "bundles/ga4/references/metrics/index.md",
+        "sha256": "63dbfb6af5f8fa271af1a9cca602b8294419785708070507d7bb6a7e62973c6f"
+      },
+      {
+        "path": "google/bundle/references/metrics/n_day_active_users.md",
+        "source_path": "bundles/ga4/references/metrics/n_day_active_users.md",
+        "sha256": "12bca0da054455b9e8c6ab6c0b9bee3bf3ed9dd69e9b5acc076c08cbb8c23f97"
+      },
+      {
+        "path": "google/bundle/references/metrics/n_day_inactive_users.md",
+        "source_path": "bundles/ga4/references/metrics/n_day_inactive_users.md",
+        "sha256": "75c9cbf2d6df62f5125e02f9554bb1eeae926e4b07d1e561f9e4d8f1d4d489c1"
+      },
+      {
+        "path": "google/bundle/references/metrics/purchasers.md",
+        "source_path": "bundles/ga4/references/metrics/purchasers.md",
+        "sha256": "9c7b14b95d950b43cfea890bed46e62cd7f64ce032f2f38e3df627603e927f85"
+      },
+      {
+        "path": "google/bundle/tables/events_.md",
+        "source_path": "bundles/ga4/tables/events_.md",
+        "sha256": "d1e0be86c4674a2e6900fede2f3e218e35cfd7f6bc3a1705f732ac57bda74fcb"
+      },
+      {
+        "path": "google/bundle/tables/index.md",
+        "source_path": "bundles/ga4/tables/index.md",
+        "sha256": "d04cb9006bfa76d27393d025750eb0b825f75d4f046c408a425504c9f6133e06"
+      }
+    ]
+  },
+  {
+    "name": "skills",
+    "repository": "https://github.com/scaccogatto/okf-skills",
+    "commit": "49f8fb4987989b7a443ce278c6aa68ba0493b51f",
+    "bundle": "examples/sample-bundle",
+    "files": [
+      {
+        "path": "skills/LICENSE",
+        "source_path": "LICENSE",
+        "sha256": "90fc3dfa20fab65d323a28636fe371ce878623e12de9283f80bec57fd907354e"
+      },
+      {
+        "path": "skills/NOTICE",
+        "source_path": "NOTICE",
+        "sha256": "861b4453ca3255230da201ba62a65f4ee77a3471067de8ce4ee890e16038070c"
+      },
+      {
+        "path": "skills/bundle/datasets/index.md",
+        "source_path": "examples/sample-bundle/datasets/index.md",
+        "sha256": "681db9cc8309ef8b2cc8145d30c673aaf0f4af77dece5cc287addc74cfa1d20b"
+      },
+      {
+        "path": "skills/bundle/datasets/orders-db.md",
+        "source_path": "examples/sample-bundle/datasets/orders-db.md",
+        "sha256": "81248ae7e606c28ade09173f5d42ccf74b8d8f3b5c5299e7fafa2414848b5679"
+      },
+      {
+        "path": "skills/bundle/decisions/event-driven.md",
+        "source_path": "examples/sample-bundle/decisions/event-driven.md",
+        "sha256": "23b75c3759f08c25295278e897528be9ff4ee6da3a764c690b5aae0746055b9c"
+      },
+      {
+        "path": "skills/bundle/decisions/index.md",
+        "source_path": "examples/sample-bundle/decisions/index.md",
+        "sha256": "401c4c1772234e088a4c5f2f54a70e524aac52234d324414fecdd2b8e504e09b"
+      },
+      {
+        "path": "skills/bundle/decisions/use-okf.md",
+        "source_path": "examples/sample-bundle/decisions/use-okf.md",
+        "sha256": "e22bd1e762118701aedd04ce57a3bcfa244defaf5aec3861f2fab8c3209a7bbb"
+      },
+      {
+        "path": "skills/bundle/index.md",
+        "source_path": "examples/sample-bundle/index.md",
+        "sha256": "c90bd20796eb834f254fb468bee5e559769e2d824d89856f1f825f574d570a48"
+      },
+      {
+        "path": "skills/bundle/log.md",
+        "source_path": "examples/sample-bundle/log.md",
+        "sha256": "bd24b5b458ebdb58ba258f11d1c8cd0790d626a1495a6bb62d039cf7cdae366a"
+      },
+      {
+        "path": "skills/bundle/metrics/checkout-conversion.md",
+        "source_path": "examples/sample-bundle/metrics/checkout-conversion.md",
+        "sha256": "4e1fcc49e2385816d65b1ccf37eb82e2c1a5a209afd6f07b77103e6e273be45b"
+      },
+      {
+        "path": "skills/bundle/metrics/index.md",
+        "source_path": "examples/sample-bundle/metrics/index.md",
+        "sha256": "6062c145e40586780555a531174775ad38f4483da302b2f9707fc0d981eb48c9"
+      },
+      {
+        "path": "skills/bundle/runbooks/index.md",
+        "source_path": "examples/sample-bundle/runbooks/index.md",
+        "sha256": "805af53b7ff4003325895e7d34031c67569786a9e67ebac0293c077dc85e2f5e"
+      },
+      {
+        "path": "skills/bundle/runbooks/payment-failures.md",
+        "source_path": "examples/sample-bundle/runbooks/payment-failures.md",
+        "sha256": "a108e1064516b35a3cd8a8e11b107f49be1a19aab1ee024cbce8bd85f74f3ee0"
+      },
+      {
+        "path": "skills/bundle/services/auth-api.md",
+        "source_path": "examples/sample-bundle/services/auth-api.md",
+        "sha256": "0f4d2d9f1b3d02997842b5ff89c13d4eab97556d5d485caef836adf5878be9be"
+      },
+      {
+        "path": "skills/bundle/services/index.md",
+        "source_path": "examples/sample-bundle/services/index.md",
+        "sha256": "ac23bb415d825ffe3bbccc8b3d2c268e6f8f74c7c032d362f33c21a39ce80b3b"
+      },
+      {
+        "path": "skills/bundle/services/orders-api.md",
+        "source_path": "examples/sample-bundle/services/orders-api.md",
+        "sha256": "8aee9163a4758b195955393367f7f3154704004a767edf3e8f4d570ba9491e31"
+      },
+      {
+        "path": "skills/bundle/services/payments-api.md",
+        "source_path": "examples/sample-bundle/services/payments-api.md",
+        "sha256": "9c109fc04ee0facf4620d6e958fa206efa9ca1cfd89c84904b70905c5f455a10"
+      }
+    ]
+  },
+  {
+    "name": "ruby",
+    "repository": "https://github.com/serradura/okf",
+    "commit": "cfb7ffac7fef37d56e97b5b7dd8fe97ffc648c7c",
+    "bundle": ".okf",
+    "files": [
+      {
+        "path": "ruby/bundle/decisions/index.md",
+        "source_path": ".okf/decisions/index.md",
+        "sha256": "00722113bc94ac4113ba4b2bf567feda4745ff09ec265f5a4854789454da94b9"
+      },
+      {
+        "path": "ruby/bundle/decisions/monorepo-layout.md",
+        "source_path": ".okf/decisions/monorepo-layout.md",
+        "sha256": "0fc4eec2bb4996d22073e8c3ea05459f12fdd5cce3aba5f5279759ae853f8d8b"
+      },
+      {
+        "path": "ruby/bundle/decisions/one-door-per-sibling.md",
+        "source_path": ".okf/decisions/one-door-per-sibling.md",
+        "sha256": "bda54942337ca410b4bb737831b5264fee4ba50bc2dd55b7d3a556a9890e7062"
+      },
+      {
+        "path": "ruby/bundle/decisions/release-and-tags.md",
+        "source_path": ".okf/decisions/release-and-tags.md",
+        "sha256": "0545e839c683b94187e7034ec25b95a661e5e5bb8050d4bcc31b18a7587e654e"
+      },
+      {
+        "path": "ruby/bundle/decisions/structure-is-a-bundle.md",
+        "source_path": ".okf/decisions/structure-is-a-bundle.md",
+        "sha256": "3c1b292c77f3111015007eabed682764ccf0db733beb9a69b4bcc290f15e9e4a"
+      },
+      {
+        "path": "ruby/bundle/decisions/the-root-is-not-a-gem.md",
+        "source_path": ".okf/decisions/the-root-is-not-a-gem.md",
+        "sha256": "8ac4b370919c62904913209144a285e7d1fee3cec83bc4544033a237c55aeb2b"
+      },
+      {
+        "path": "ruby/bundle/design/extension-points.md",
+        "source_path": ".okf/design/extension-points.md",
+        "sha256": "9bb1416796cb541e9ec5a270dc461ac7ea6b3e9b9eb0795bafa4d60d6a256133"
+      },
+      {
+        "path": "ruby/bundle/design/how-a-change-is-proven.md",
+        "source_path": ".okf/design/how-a-change-is-proven.md",
+        "sha256": "c036521e259f78386c6f36c8f5b229dc44ee3051b13cd47652d1594118812a08"
+      },
+      {
+        "path": "ruby/bundle/design/index.md",
+        "source_path": ".okf/design/index.md",
+        "sha256": "b791aefd40d244a49a2565cb49f2e4876f628a4515d0cb62ebdcdab228cada8d"
+      },
+      {
+        "path": "ruby/bundle/design/nothing-runs-it.md",
+        "source_path": ".okf/design/nothing-runs-it.md",
+        "sha256": "e8dd4e41f19addf25fd19f3fdf5e1e9b13235523279bd625b0dbb30d34ec0105"
+      },
+      {
+        "path": "ruby/bundle/design/pull-requests.md",
+        "source_path": ".okf/design/pull-requests.md",
+        "sha256": "30586ae5d7f576611dcef07a76529ca9baf7459bd254f58dcf980f7d7c2280b3"
+      },
+      {
+        "path": "ruby/bundle/design/the-readmes.md",
+        "source_path": ".okf/design/the-readmes.md",
+        "sha256": "563a0a8562fa0cbd8023a9ed81758be2c45efe3493c8dc8e40028c7ec1adbff2"
+      },
+      {
+        "path": "ruby/bundle/design/where-knowledge-lives.md",
+        "source_path": ".okf/design/where-knowledge-lives.md",
+        "sha256": "8e8ede3e55192e60a21d8366760cfef71c25842f02e101253b550145aabfb33e"
+      },
+      {
+        "path": "ruby/bundle/format/citations.md",
+        "source_path": ".okf/format/citations.md",
+        "sha256": "66c2c6b59a89a1dd2172fd63e168551a2c6ee0d6525d9989921f844c314e8be6"
+      },
+      {
+        "path": "ruby/bundle/format/cross-links.md",
+        "source_path": ".okf/format/cross-links.md",
+        "sha256": "b9bcdebd1492c51bc6935d06d4bd88157f9d19f355854b140e003dc5a5b26398"
+      },
+      {
+        "path": "ruby/bundle/format/frontmatter.md",
+        "source_path": ".okf/format/frontmatter.md",
+        "sha256": "fd4b60db92b6a8ecc52334c007a17bbc39800549717c477aa0f0bfb8eb634a8d"
+      },
+      {
+        "path": "ruby/bundle/format/index.md",
+        "source_path": ".okf/format/index.md",
+        "sha256": "c011eb06bbef5913998c377d2e38ff3534d3db93a255f2736c1ef075863e154d"
+      },
+      {
+        "path": "ruby/bundle/format/okf-0-2.md",
+        "source_path": ".okf/format/okf-0-2.md",
+        "sha256": "e4dd74644695e4424345181e923ecb11087b9b2abf6342a42125c5404b341a15"
+      },
+      {
+        "path": "ruby/bundle/format/okf-format.md",
+        "source_path": ".okf/format/okf-format.md",
+        "sha256": "cfad2c033f408634b79842b4f6cdcab32a83b645ca61bdd856a5fb7145f7a276"
+      },
+      {
+        "path": "ruby/bundle/gems/index.md",
+        "source_path": ".okf/gems/index.md",
+        "sha256": "d2b8ff3fe42af31c78c7a73687340c590983149b02dd1df3ddf89dc4428eab2f"
+      },
+      {
+        "path": "ruby/bundle/gems/okf-mcp.md",
+        "source_path": ".okf/gems/okf-mcp.md",
+        "sha256": "9cc75cd858959602b913518c0ad764ae1ea13f3443cdb7aae8183d3a41b37e7f"
+      },
+      {
+        "path": "ruby/bundle/gems/okf-pro.md",
+        "source_path": ".okf/gems/okf-pro.md",
+        "sha256": "10ee63a1256f7b72fdef9c42e0351aa981015177e046778c6f001006fc40dd2a"
+      },
+      {
+        "path": "ruby/bundle/gems/okf-tui.md",
+        "source_path": ".okf/gems/okf-tui.md",
+        "sha256": "2ea7018929d6e3f56478ea86c2e2846c381a37420510a39b08474be46fdbc460"
+      },
+      {
+        "path": "ruby/bundle/gems/okf.md",
+        "source_path": ".okf/gems/okf.md",
+        "sha256": "82b9218144ef4927c7d4b67b12bd19420808f049fc7d30f2d937795a21fbedda"
+      },
+      {
+        "path": "ruby/bundle/index.md",
+        "source_path": ".okf/index.md",
+        "sha256": "88e486ab84d8b13e22b9e4f2c17012cf82b1d764af13c350827adff827470b7f"
+      },
+      {
+        "path": "ruby/bundle/log.md",
+        "source_path": ".okf/log.md",
+        "sha256": "d8fdcd0ce9d1370b37a180f3540121d704854acba4fc577c83530f6dd8724da2"
+      },
+      {
+        "path": "ruby/bundle/overview.md",
+        "source_path": ".okf/overview.md",
+        "sha256": "59dd870d0c4211014221e7aa5e8df665d21e5f163eae50d2c36eda8ef05f2407"
+      },
+      {
+        "path": "ruby/bundle/plugin/claude-code-plugin.md",
+        "source_path": ".okf/plugin/claude-code-plugin.md",
+        "sha256": "519ea7a8695edba9a1a65725df736fc6a2913bb3bd495ca3914fc2b2eaf794c1"
+      },
+      {
+        "path": "ruby/bundle/plugin/curation-hook.md",
+        "source_path": ".okf/plugin/curation-hook.md",
+        "sha256": "d396a352ce2d29b7de560997b4b7d886dc18ea683a3ea4604834b5586a543939"
+      },
+      {
+        "path": "ruby/bundle/plugin/index.md",
+        "source_path": ".okf/plugin/index.md",
+        "sha256": "3bfd25abc1387edbeefbdbb3d4e561b8e03c62a83f20a7e8cb6aa21bc8f87734"
+      },
+      {
+        "path": "ruby/bundle/plugin/marketplace.md",
+        "source_path": ".okf/plugin/marketplace.md",
+        "sha256": "e0a4eee156f56d0cf474ceab40aa878290c4d5383ce5438dc99efa425fe66b9e"
+      },
+      {
+        "path": "ruby/bundle/resources/ci-github.md",
+        "source_path": ".okf/resources/ci-github.md",
+        "sha256": "01c7e887ba6e40a9e4b08ed1a60b66d3fdd4af05e837f495e99d1a1719bc17d1"
+      },
+      {
+        "path": "ruby/bundle/resources/index.md",
+        "source_path": ".okf/resources/index.md",
+        "sha256": "dfa675fe814fd8ce1e69c4970017e08c17ae1e01edffb978a340923e3353ad66"
+      },
+      {
+        "path": "ruby/bundle/skills/index.md",
+        "source_path": ".okf/skills/index.md",
+        "sha256": "739dd32ff700d1a114c39014e2f27aeb6d730b46e8bc7b998cdd326282bcc684"
+      },
+      {
+        "path": "ruby/bundle/skills/okf-principles.md",
+        "source_path": ".okf/skills/okf-principles.md",
+        "sha256": "4d2cb8eb898609fdb72be8eb5b86c623843ff8cc275aeb672242183e480f3015"
+      },
+      {
+        "path": "ruby/bundle/skills/okf-skill.md",
+        "source_path": ".okf/skills/okf-skill.md",
+        "sha256": "080d505892bd013d60c5d863869ef02fd0b8393c0ba2140600a88543031cb6b0"
+      },
+      {
+        "path": "ruby/LICENSE.txt",
+        "source_path": "LICENSE.txt",
+        "sha256": "a4d5cfa64c002c91153e9dbcb451e60cceceb0f74a18ee4cac4bc0b5faba377c"
+      },
+      {
+        "path": "ruby/NOTICE",
+        "source_path": "NOTICE",
+        "sha256": "c6f28048c8197954d1bc9414635893cc1f6ee6bde924c2128f1fc99c79f7e42a"
+      }
+    ]
+  }
+]

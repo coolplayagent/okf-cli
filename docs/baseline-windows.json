@@ -1,0 +1,130 @@
+{
+  "arch": "x86_64",
+  "note": "OS caches are not flushed; phases describe only the observation database. Timings are informational.",
+  "os": "windows",
+  "runs": [
+    {
+      "directory_lists": 19,
+      "elapsed_us": 209309,
+      "file_reads": 44,
+      "phase": "empty_observation_cache",
+      "query": "knowledge",
+      "read_bytes": 139099,
+      "returned": 5,
+      "scan": {
+        "content_bytes_limit": 65536,
+        "content_bytes_used": 2581,
+        "scan_limit": 10000,
+        "scanned_entries": 119
+      },
+      "status": "ok"
+    },
+    {
+      "directory_lists": 19,
+      "elapsed_us": 202997,
+      "file_reads": 44,
+      "phase": "empty_observation_cache",
+      "query": "认证",
+      "read_bytes": 139099,
+      "returned": 0,
+      "scan": {
+        "content_bytes_limit": 65536,
+        "content_bytes_used": 0,
+        "scan_limit": 10000,
+        "scanned_entries": 119
+      },
+      "status": "ok"
+    },
+    {
+      "directory_lists": 19,
+      "elapsed_us": 237043,
+      "file_reads": 44,
+      "phase": "empty_observation_cache",
+      "query": "executor.resource",
+      "read_bytes": 139099,
+      "returned": 0,
+      "scan": {
+        "content_bytes_limit": 65536,
+        "content_bytes_used": 0,
+        "scan_limit": 10000,
+        "scanned_entries": 119
+      },
+      "status": "ok"
+    },
+    {
+      "directory_lists": 19,
+      "elapsed_us": 140493,
+      "file_reads": 44,
+      "phase": "populated_observation_cache",
+      "query": "knowledge",
+      "read_bytes": 139099,
+      "returned": 5,
+      "scan": {
+        "content_bytes_limit": 65536,
+        "content_bytes_used": 2581,
+        "scan_limit": 10000,
+        "scanned_entries": 119
+      },
+      "status": "ok"
+    },
+    {
+      "directory_lists": 19,
+      "elapsed_us": 144477,
+      "file_reads": 44,
+      "phase": "populated_observation_cache",
+      "query": "认证",
+      "read_bytes": 139099,
+      "returned": 0,
+      "scan": {
+        "content_bytes_limit": 65536,
+        "content_bytes_used": 0,
+        "scan_limit": 10000,
+        "scanned_entries": 119
+      },
+      "status": "ok"
+    },
+    {
+      "directory_lists": 19,
+      "elapsed_us": 141258,
+      "file_reads": 44,
+      "phase": "populated_observation_cache",
+      "query": "executor.resource",
+      "read_bytes": 139099,
+      "returned": 0,
+      "scan": {
+        "content_bytes_limit": 65536,
+        "content_bytes_used": 0,
+        "scan_limit": 10000,
+        "scanned_entries": 119
+      },
+      "status": "ok"
+    },
+    {
+      "directory_lists": 0,
+      "elapsed_us": 1993,
+      "file_reads": 0,
+      "phase": "synchronized_index",
+      "query": "knowledge",
+      "read_bytes": 0,
+      "returned": 14
+    },
+    {
+      "directory_lists": 0,
+      "elapsed_us": 1352,
+      "file_reads": 0,
+      "phase": "synchronized_index",
+      "query": "认证",
+      "read_bytes": 0,
+      "returned": 0
+    },
+    {
+      "directory_lists": 0,
+      "elapsed_us": 1305,
+      "file_reads": 0,
+      "phase": "synchronized_index",
+      "query": "executor.resource",
+      "read_bytes": 0,
+      "returned": 0
+    }
+  ]
+}

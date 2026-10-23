@@ -57,6 +57,35 @@ okf validate handbook --format json
 okf status handbook --format json
 ```
 
+### Git 知识包
+
+绑定 Git 仓库的指定提交视图，分支更新后显式刷新：
+
+```sh
+okf bundle add upstream --kind git --path ../knowledge-repo --ref main --bundle-path .okf
+okf bundle refresh upstream
+```
+
+Git 适配器需要 Git 可执行文件，可用 `OKF_GIT` 指定路径。也可用 `--url https://github.com/OWNER/REPO.git` 替代 `--path` 绑定公开 HTTPS 仓库。读取使用固定 commit 的 tree/blob，不检出工作区。
+
+需要代理时，通过 `HTTPS_PROXY` / `HTTP_PROXY` 传给 Git；不会自动读取操作系统浏览器代理。私有仓库凭据配置暂未提供。
+
+### 正文索引与离线读取
+
+显式同步正文索引后，可检索正文、选择上下文片段或离线读取：
+
+```sh
+okf sync handbook --max-scan 10000
+okf search "认证" --bundle handbook --full-text --format json
+okf context --query "认证" --bundle handbook --content --format json
+okf read @handbook/services/auth --indexed --format json
+okf index status handbook
+```
+
+全文检索与上下文选择当前每次指定一个知识包；结果标注索引 generation、内容哈希和原文字节范围。离线索引代表上次成功同步的内容。扫描不完整时不会替换旧索引。
+
+使用 `okf cache reset` 将历史卡片缓存归档后重建；`okf index clear NAME` 清理指定知识包的正文索引。两者均保留知识包与绑定。
+
 使用 `--format json` 获取机器可读结果。目录和原文分页时，将 `page.next_cursor` 传入同一命令的 `--cursor` 参数继续读取。可通过 `okf <命令> --help` 查看选项，通过 [CLI 参考](docs/cli-contract.md) 了解预算、诊断和覆盖范围。
 
 ## 配置
@@ -88,13 +117,27 @@ cargo test --workspace --all-targets --release --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
+Git 测试需要 Git。固定版本的上游语料位于 `fixtures/upstream`，普通测试不联网。性能基线与打包验证：
+
+```sh
+cargo run --release --locked -p okf-adapters --example baseline -- fixtures/upstream
+python scripts/smoke.py target/release/okf
+python scripts/acceptance.py target/release/okf
+python scripts/package.py target/release/okf
+```
+
+Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含校验和，位于 `target/dist`；工作流仅生成构建产物。
+
+`acceptance.py` 在临时目录中逐文件验证上游语料的实时与离线读取，并检查 Unicode 分页、索引版本失效和缓存损坏恢复；不修改原始语料，也不访问网络。
+
 ## 文档
 
 - [产品与架构](docs/architecture.md)：模块边界、数据流和存储职责。
 - [CLI 与 Agent 参考](docs/cli-contract.md)：命令参数、响应结构和消费流程。
 - [OKF 检查矩阵](docs/okf-validation.md)：规范依据、诊断级别和字段定位。
 - [实现状态](docs/implementation-status.md)：功能范围、行为边界和验证方法。
-- [实施计划](docs/roadmap.md)：开发阶段与验收目标。
+- [性能基线](docs/performance.md)：固定上游语料、测量方法与结果边界。
+- [实施计划](docs/roadmap.md)：剩余工作与验收目标。
 
 ## 许可证
 

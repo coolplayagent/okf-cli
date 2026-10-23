@@ -23,6 +23,7 @@ fn binding(root: &std::path::Path) -> BundleBinding {
             .to_string_lossy()
             .into_owned(),
         scope: "project".into(),
+        git: None,
     }
 }
 
@@ -168,4 +169,74 @@ fn expired_or_cancelled_requests_stop_before_filesystem_access() {
             .code,
         "CANCELLED"
     );
+}
+
+#[test]
+fn resource_metadata_distinguishes_missing_files_and_directories_without_reading_bytes() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("tools")).unwrap();
+    fs::write(root.path().join("tools/raw.bin"), [0xff, 0x00, 0xfe]).unwrap();
+    let b = binding(root.path());
+    let metadata = Filesystem
+        .stat(&b, "tools/raw.bin", &control())
+        .unwrap()
+        .unwrap();
+    assert!(!metadata.directory);
+    assert_eq!(metadata.bytes, 3);
+    assert!(
+        Filesystem
+            .stat(&b, "tools", &control())
+            .unwrap()
+            .unwrap()
+            .directory
+    );
+    assert!(Filesystem
+        .stat(&b, "absent.py", &control())
+        .unwrap()
+        .is_none());
+    assert!(Filesystem.stat(&b, "../outside", &control()).is_err());
+}
+
+#[test]
+fn cache_reset_preserves_corrupt_bytes_and_refuses_active_consumers() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("index.sqlite");
+    let cache = SqliteCache::open(&path).unwrap();
+    assert_eq!(SqliteCache::reset(&path).unwrap_err().code, "CACHE_LOCKED");
+    drop(cache);
+    fs::write(&path, b"corrupt database").unwrap();
+    assert!(SqliteCache::open(&path).is_err());
+    let result = SqliteCache::reset(&path).unwrap();
+    let archive = std::path::Path::new(result["archive"].as_str().unwrap());
+    assert_eq!(
+        fs::read(archive.join("index.sqlite")).unwrap(),
+        b"corrupt database"
+    );
+    assert_eq!(
+        SqliteCache::open(&path).unwrap().status("book").unwrap()["cached_cards"],
+        0
+    );
+}
+
+#[test]
+fn config_os_lock_rejects_active_owner_and_reuses_abandoned_file() {
+    let root = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join(".okf-cli")).unwrap();
+    let path = root.path().join(".okf-cli/config.lock");
+    let file = fs::OpenOptions::new()
+        .create_new(true)
+        .read(true)
+        .write(true)
+        .open(&path)
+        .unwrap();
+    file.try_lock().unwrap();
+    let registry = ConfigRegistry::discover(home.path().into(), root.path().into(), None);
+    let b = binding(root.path());
+    assert_eq!(registry.add(&b).unwrap_err().code, "CONFIG_LOCKED");
+    drop(file); // Simulates an owner exiting without deleting its lock file.
+    fs::write(&path, "pid=dead-owner").unwrap();
+    registry.add(&b).unwrap();
+    assert!(path.exists());
+    assert_eq!(registry.list().unwrap().len(), 1);
 }

@@ -20,6 +20,7 @@ impl BundleRegistry for Registry {
             root: "unused".into(),
             kind: "test".into(),
             scope: "project".into(),
+            git: None,
         }])
     }
     fn add(&self, _: &BundleBinding) -> Result<()> {
@@ -311,4 +312,67 @@ fn cancellation_before_link_checks_preserves_completed_metadata_coverage() {
     assert_eq!(response.bundles[0]["coverage"]["metadata"], "complete");
     assert_eq!(response.diagnostics.len(), 1);
     assert_eq!(response.diagnostics[0].code, "CANCELLED");
+}
+
+#[test]
+fn denied_resource_is_not_reported_as_missing_or_incomplete_metadata() {
+    struct ResourceReader;
+    impl BundleReader for ResourceReader {
+        fn probe(&self, _: &BundleBinding) -> Result<()> {
+            Ok(())
+        }
+        fn list(&self, _: &BundleBinding, _: &str, budget: &mut ScanBudget<'_>) -> Result<Listing> {
+            budget.charge()?;
+            Ok(Listing {
+                complete: true,
+                entries: vec![Entry {
+                    path: "compute.md".into(),
+                    directory: false,
+                    bytes: 100,
+                    revision: "1".into(),
+                }],
+            })
+        }
+        fn read(
+            &self,
+            _: &BundleBinding,
+            _: &str,
+            _: usize,
+            control: &RequestControl,
+        ) -> Result<String> {
+            control.check()?;
+            Ok(
+                "---\ntype: Attested Computation\nruntime: python\ncomputation: code.py\n---\n"
+                    .into(),
+            )
+        }
+        fn stat(
+            &self,
+            _: &BundleBinding,
+            _: &str,
+            _: &RequestControl,
+        ) -> Result<Option<okf_application::ResourceMetadata>> {
+            Err(Error::new("ACCESS_DENIED", "injected permission denial", 4))
+        }
+    }
+    let control = RequestControl::new(Duration::from_secs(30), Arc::new(AtomicBool::new(false)));
+    let app = App {
+        registry: &Registry,
+        reader: &ResourceReader,
+        cache: &ObservationCache { fail: false },
+        now: Utc::now(),
+        control: &control,
+    };
+    let response = app.validate("book", &options()).unwrap();
+    assert_eq!(response.exit_code, 7);
+    assert_eq!(response.data["resource_check"]["complete"], false);
+    assert_eq!(response.bundles[0]["coverage"]["metadata"], "complete");
+    assert!(response
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "ACCESS_DENIED"));
+    assert!(!response
+        .diagnostics
+        .iter()
+        .any(|d| d.code == "MISSING_RESOURCE"));
 }

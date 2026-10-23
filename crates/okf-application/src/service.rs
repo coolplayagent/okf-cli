@@ -56,7 +56,7 @@ impl App<'_> {
         markdown
     }
 
-    fn document_diagnostics(
+    pub(crate) fn document_diagnostics(
         &self,
         binding: &BundleBinding,
         path: &str,
@@ -135,6 +135,7 @@ impl App<'_> {
         value["ref"] = json!(format!("@{}/{}", binding.name, id));
         value["bundle_id"] = json!(binding.id);
         value["content_sha256"] = json!(hash);
+        value["upstream_revision"] = json!(binding.git.as_ref().map(|g| &g.commit));
         Ok(CardObservation {
             value,
             diagnostics,
@@ -160,7 +161,7 @@ impl App<'_> {
                 );
                 break;
             }
-            if let Err(error) = self.reader.probe(binding) {
+            if let Err(error) = self.reader.probe_controlled(binding, self.control) {
                 if bindings.len() == 1 {
                     return Err(error);
                 }
@@ -209,7 +210,10 @@ impl App<'_> {
             ));
         }
         let entries = listing.entries;
-        let revision = sha256(&serde_json::to_vec(&entries).map_err(Error::io)?);
+        let revision = cursor_revision(
+            &binding,
+            &sha256(&serde_json::to_vec(&entries).map_err(Error::io)?),
+        );
         let mut index = 0;
         if let Some(token) = &options.cursor {
             let cursor: Cursor = decode_cursor(token)?;
@@ -282,14 +286,13 @@ impl App<'_> {
                     }
                 }
             };
+            if item.to_string().len() > options.budget {
+                complete = false;
+                response.issue(&Error::new("CARD_TOO_LARGE", "card exceeds the content budget; increase --budget-bytes or read the file directly", 7), &format!("@{}/{}", binding.name, entry.path));
+                index += 1;
+                continue;
+            }
             if !fits(&item, &mut used, options.budget) {
-                if items.is_empty() {
-                    return Err(Error::new(
-                        "BUDGET_TOO_SMALL",
-                        "budget cannot fit the next card",
-                        2,
-                    ));
-                }
                 break;
             }
             items.push(item);
@@ -380,7 +383,13 @@ impl App<'_> {
         }
         let start = if let Some(token) = &options.cursor {
             let cursor: Cursor = decode_cursor(token)?;
-            check_cursor(&cursor, &binding, "read", &path, &hash)?;
+            check_cursor(
+                &cursor,
+                &binding,
+                "read",
+                &path,
+                &cursor_revision(&binding, &hash),
+            )?;
             cursor.offset
         } else {
             0
@@ -392,14 +401,14 @@ impl App<'_> {
                 bundle_id: binding.id.clone(),
                 operation: "read".into(),
                 target: path.clone(),
-                revision: hash.clone(),
+                revision: cursor_revision(&binding, &hash),
                 offset: end,
             })?)
         } else {
             None
         };
         response.data["document"] = json!({"bundle_id": binding.id, "path": path,
-            "concept_id": concept_id, "content_sha256": hash,
+            "concept_id": concept_id, "content_sha256": hash, "upstream_revision": binding.git.as_ref().map(|g| &g.commit),
             "byte_start": start, "byte_end": end, "total_bytes": raw.len(), "text": &raw[start..end]});
         self.control.check()?;
         response.page = json!({"returned": 1, "total": 1, "has_more": more, "next_cursor": cursor});
@@ -511,10 +520,8 @@ impl App<'_> {
                         if terms.iter().all(|term| haystack.contains(term)) {
                             match_count += 1;
                             if card.to_string().len() > options.budget {
-                                response.partial(
-                                    "CARD_TOO_LARGE",
-                                    "a matching card exceeds the content budget",
-                                );
+                                complete = false;
+                                response.issue(&Error::new("CARD_TOO_LARGE", "card exceeds the content budget; increase --budget-bytes or read the file directly", 7), &format!("@{}/{}", binding.name, entry.path));
                             } else if matches.len() <= options.limit {
                                 matches.push(card);
                             }
@@ -563,6 +570,15 @@ impl App<'_> {
     }
 
     pub fn validate(&self, name: &str, options: &ReadOptions) -> Result<Response> {
+        self.validate_with_resources(name, options, 4096)
+    }
+
+    pub fn validate_with_resources(
+        &self,
+        name: &str,
+        options: &ReadOptions,
+        resource_limit: usize,
+    ) -> Result<Response> {
         let binding = self.binding(name)?;
         let mut response = Response::new("validate", json!({"concepts": 0, "checked": 0}));
         let mut queue = VecDeque::from([String::new()]);
@@ -575,6 +591,7 @@ impl App<'_> {
         let mut links_truncated = false;
         let mut link_bytes = 0;
         let mut body_warnings = BTreeMap::<String, BodyWarningState>::new();
+        let mut resources = crate::resources::Resources::new(resource_limit);
         'scan: while let Some(directory) = queue.pop_front() {
             let listing = match self.reader.list(&binding, &directory, &mut scan) {
                 Ok(listing) => listing,
@@ -614,6 +631,7 @@ impl App<'_> {
                             (vec![], self.markdown(&binding, &entry.path, &raw, None))
                         } else {
                             let doc = Document::parse(&raw)?;
+                            resources.collect(&entry.path, &doc);
                             (
                                 doc.diagnostics(&format!("@{}/{}", binding.name, entry.path)),
                                 self.markdown(&binding, &entry.path, &raw, Some(&doc)),
@@ -731,11 +749,6 @@ impl App<'_> {
             );
         }
         response.data["failures"] = json!(failures);
-        response.data["warnings"] = json!(response
-            .diagnostics
-            .iter()
-            .filter(|diagnostic| diagnostic.severity == Severity::Warning)
-            .count());
         if let Err(error) = self.control.check() {
             complete = false;
             if !response.diagnostics.iter().any(|d| d.code == error.code) {
@@ -749,6 +762,18 @@ impl App<'_> {
             "scope": "bundle_markdown_targets",
             "complete": complete && failures == 0 && !links_truncated && !body_warnings.values().any(|state| state.truncated)
         });
+        resources.check(
+            &binding,
+            self.reader,
+            self.control,
+            &mut response,
+            metadata_complete && failures == 0,
+        );
+        response.data["warnings"] = json!(response
+            .diagnostics
+            .iter()
+            .filter(|d| d.severity == Severity::Warning)
+            .count());
         if failures > 0 && response.exit_code == 0 {
             response.status = "error".into();
             response.exit_code = 1;
@@ -817,4 +842,11 @@ fn check_cursor(
         ));
     }
     Ok(())
+}
+
+fn cursor_revision(binding: &BundleBinding, hash: &str) -> String {
+    binding.git.as_ref().map_or_else(
+        || hash.into(),
+        |git| format!("{}:{}:{hash}", git.commit, git.bundle_path),
+    )
 }

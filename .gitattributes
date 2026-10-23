@@ -1,0 +1,2 @@
+# Upstream fixture hashes refer to original bytes, including line endings.
+fixtures/upstream/** -text

@@ -1,8 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use okf_adapters::{default_home, ConfigRegistry, Filesystem, SqliteCache};
+use okf_adapters::{default_home, ConfigRegistry, Git, Readers, SqliteCache, SqliteIndex};
 use okf_application::{
-    App, BundleBinding, BundleReader, BundleRegistry, Cache, ReadOptions, RequestControl, Response,
-    UnavailableCache,
+    App, BundleBinding, BundleReader, BundleRegistry, Cache, Index, ReadOptions, RequestControl,
+    Response, UnavailableCache,
 };
 use okf_core::{sha256, Diagnostic, Error, Result};
 use serde_json::json;
@@ -69,6 +69,9 @@ enum Command {
         bundles: Vec<String>,
         #[arg(long)]
         query: Option<String>,
+        /// Select original body excerpts from a synchronized index (one --bundle).
+        #[arg(long, requires = "query", requires = "bundles")]
+        content: bool,
         #[command(flatten)]
         page: ContextArgs,
     },
@@ -83,14 +86,22 @@ enum Command {
         reference: String,
         #[arg(long)]
         raw: bool,
+        /// Read the explicitly synchronized offline index.
+        #[arg(long, conflicts_with = "raw")]
+        indexed: bool,
+        /// Require the index generation returned by search/context.
+        #[arg(long, requires = "indexed")]
+        generation: Option<String>,
         #[command(flatten)]
         page: ReadArgs,
     },
-    /// Bounded metadata search; this is not full-text search.
+    /// Search live metadata, or synchronized bodies with --full-text.
     Search {
         query: String,
         #[arg(long = "bundle")]
         bundles: Vec<String>,
+        #[arg(long, requires = "bundles")]
+        full_text: bool,
         #[command(flatten)]
         page: SearchArgs,
     },
@@ -99,10 +110,28 @@ enum Command {
     },
     Validate {
         name: String,
+        /// Maximum collected computation resource declarations (metadata queries only).
+        #[arg(long, default_value_t = 4096, value_parser = parse_scan)]
+        max_resources: usize,
         #[command(flatten)]
         page: ScanArgs,
     },
     Doctor,
+    /// Atomically publish a complete bounded scan into the offline content index.
+    Sync {
+        name: String,
+        #[command(flatten)]
+        page: ScanArgs,
+    },
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
+    },
+    /// Archive and recreate the disposable observation cache.
+    Cache {
+        #[command(subcommand)]
+        command: CacheCommand,
+    },
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
@@ -117,6 +146,12 @@ enum BundleCommand {
         kind: String,
         #[arg(long)]
         path: Option<PathBuf>,
+        #[arg(long, conflicts_with = "path")]
+        url: Option<String>,
+        #[arg(long = "ref")]
+        reference: Option<String>,
+        #[arg(long)]
+        bundle_path: Option<String>,
     },
     List,
     Show {
@@ -125,12 +160,26 @@ enum BundleCommand {
     Remove {
         name: String,
     },
+    /// Resolve the configured Git ref and atomically publish its new commit.
+    Refresh {
+        name: String,
+    },
 }
 
 #[derive(Subcommand)]
 enum SkillCommand {
     /// Install the bundled CLI consumption skill. Existing files are preserved.
     Install { path: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum CacheCommand {
+    Reset,
+}
+#[derive(Subcommand)]
+enum IndexCommand {
+    Status { name: String },
+    Clear { name: String },
 }
 
 #[derive(Args)]
@@ -245,6 +294,10 @@ impl Command {
             Self::Read { page, .. } => Some(page.work.timeout_ms),
             Self::Search { page, .. } => Some(page.scan.work.timeout_ms),
             Self::Validate { page, .. } => Some(page.work.timeout_ms),
+            Self::Sync { page, .. } => Some(page.work.timeout_ms),
+            Self::Bundle {
+                command: BundleCommand::Refresh { .. } | BundleCommand::Add { .. },
+            } => Some(30_000),
             _ => None,
         }
     }
@@ -321,17 +374,51 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
         std::env::current_dir().map_err(Error::io)?,
         cli.scope.map(|s| s.label().into()),
     );
-    let cache_result = SqliteCache::open(&home.join("index.sqlite"));
+    if matches!(
+        &cli.command,
+        Command::Cache {
+            command: CacheCommand::Reset
+        }
+    ) {
+        return Ok(Response::new(
+            "cache reset",
+            SqliteCache::reset(&home.join("index.sqlite"))?,
+        ));
+    }
+    let index_operation = matches!(
+        &cli.command,
+        Command::Sync { .. }
+            | Command::Index { .. }
+            | Command::Read { indexed: true, .. }
+            | Command::Search {
+                full_text: true,
+                ..
+            }
+            | Command::Context { content: true, .. }
+    );
+    let cache_result = if index_operation {
+        None
+    } else {
+        Some(SqliteCache::open(&home.join("index.sqlite")))
+    };
     let unavailable;
     let cache: &dyn Cache = match &cache_result {
-        Ok(cache) => cache,
-        Err(error) if cli.command.timeout_ms().is_some() => {
+        Some(Ok(cache)) => cache,
+        Some(Err(error)) if cli.command.timeout_ms().is_some() => {
             unavailable = UnavailableCache(error.clone());
             &unavailable
         }
-        Err(error) => return Err(error.clone()),
+        Some(Err(error)) => return Err(error.clone()),
+        None => {
+            unavailable = UnavailableCache(Error::new(
+                "CACHE_UNUSED",
+                "index operations do not use the observation cache",
+                5,
+            ));
+            &unavailable
+        }
     };
-    let reader = Filesystem;
+    let reader = Readers;
     let app = App {
         registry: &registry,
         reader: &reader,
@@ -341,7 +428,14 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
     };
     let mut response = match &cli.command {
         Command::Bundle { command } => match command {
-            BundleCommand::Add { name, kind, path } => {
+            BundleCommand::Add {
+                name,
+                kind,
+                path,
+                url,
+                reference,
+                bundle_path,
+            } => {
                 if name.is_empty()
                     || name.len() > 64
                     || !name
@@ -354,31 +448,71 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                         2,
                     ));
                 }
-                if kind != "fs" {
+                if kind != "fs" && kind != "git" {
                     return Err(Error::new(
                         "UNSUPPORTED_CAPABILITY",
-                        format!("{kind} adapter is not implemented; this version supports fs"),
+                        format!(
+                            "{kind} adapter is not implemented; this version supports fs and git"
+                        ),
                         2,
                     ));
                 }
-                let path = path.as_ref().ok_or_else(|| {
-                    Error::new("INVALID_ARGUMENT", "--path is required for fs", 2)
-                })?;
-                let root = std::fs::canonicalize(path).map_err(Error::io)?;
+                if kind == "fs" && (url.is_some() || reference.is_some() || bundle_path.is_some()) {
+                    return Err(Error::new(
+                        "INVALID_ARGUMENT",
+                        "--url, --ref and --bundle-path require --kind git",
+                        2,
+                    ));
+                }
+                let root = if let Some(url) = url {
+                    let key = sha256(
+                        format!(
+                            "{url}\0{name}\0{}\0{}",
+                            registry.project.display(),
+                            cli.scope.unwrap_or(Scope::Project).label()
+                        )
+                        .as_bytes(),
+                    );
+                    let root = home.join("git").join(key);
+                    Git::init(&root, control)?;
+                    root
+                } else {
+                    std::fs::canonicalize(path.as_ref().ok_or_else(|| {
+                        Error::new("INVALID_ARGUMENT", "--path or --url is required", 2)
+                    })?)
+                    .map_err(Error::io)?
+                };
                 let scope = cli.scope.unwrap_or(Scope::Project).label();
                 let key = format!(
                     "{name}\0{scope}\0{}\0{}",
                     root.display(),
                     registry.project.display()
                 );
-                let binding = BundleBinding {
+                let mut binding = BundleBinding {
                     id: format!("bundle-{}", &sha256(key.as_bytes())[..24]),
                     name: name.clone(),
                     kind: kind.clone(),
                     root: root.to_string_lossy().into_owned(),
                     scope: scope.into(),
+                    git: None,
                 };
-                reader.probe(&binding)?;
+                if kind == "git" {
+                    let requested = reference.as_deref().unwrap_or("HEAD");
+                    let fetched = url
+                        .as_ref()
+                        .map(|url| Git::fetch(&root, url, requested, control))
+                        .transpose()?;
+                    let mut revision = Git::pin(
+                        &root,
+                        fetched.as_deref().unwrap_or(requested),
+                        bundle_path.as_deref().unwrap_or(""),
+                        control,
+                    )?;
+                    revision.reference = requested.into();
+                    revision.remote = url.clone();
+                    binding.git = Some(revision);
+                }
+                reader.probe_controlled(&binding, control)?;
                 registry.add(&binding)?;
                 let mut response = Response::new("bundle add", json!({"bundle": binding}));
                 response
@@ -402,12 +536,64 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     json!({"removed": name, "bundle_content_deleted": false}),
                 ))
             }
+            BundleCommand::Refresh { name } => {
+                let old = app.binding(name)?;
+                let git = old
+                    .git
+                    .as_ref()
+                    .filter(|_| old.kind == "git")
+                    .ok_or_else(|| {
+                        Error::new(
+                            "UNSUPPORTED_CAPABILITY",
+                            "refresh requires a Git binding",
+                            2,
+                        )
+                    })?;
+                let root = std::path::Path::new(&old.root);
+                let fetched = git
+                    .remote
+                    .as_ref()
+                    .map(|url| Git::fetch(root, url, &git.reference, control))
+                    .transpose()?;
+                let mut revision = Git::pin(
+                    root,
+                    fetched.as_deref().unwrap_or(&git.reference),
+                    &git.bundle_path,
+                    control,
+                )?;
+                revision.reference = git.reference.clone();
+                revision.remote = git.remote.clone();
+                let mut updated = old.clone();
+                updated.git = Some(revision);
+                registry.replace(&old, &updated)?;
+                Ok(Response::new(
+                    "bundle refresh",
+                    json!({"bundle":updated,"previous_revision":git.commit}),
+                ))
+            }
         },
         Command::Context {
             bundles,
             query,
             page,
+            content,
         } => {
+            if *content {
+                if bundles.len() != 1 {
+                    return Err(Error::new(
+                        "INVALID_ARGUMENT",
+                        "--content requires exactly one --bundle",
+                        2,
+                    ));
+                }
+                return app.indexed_search(
+                    query.as_deref().unwrap_or(""),
+                    &bundles[0],
+                    &page.options(),
+                    &SqliteIndex::open(&home.join("content.sqlite"))?,
+                    true,
+                );
+            }
             if let Some(query) = query {
                 let mut response = app.search(query, bundles, &page.options())?;
                 response.command = "context".into();
@@ -429,13 +615,55 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             reference,
             raw,
             page,
-        } => app.read(reference, *raw, &page.options()),
+            indexed,
+            generation,
+        } => {
+            if *indexed {
+                let response = app.indexed_read(
+                    reference,
+                    &page.options(),
+                    &SqliteIndex::open(&home.join("content.sqlite"))?,
+                )?;
+                if generation.as_ref().is_some_and(|expected| {
+                    response.data["document"]["generation"].as_str() != Some(expected)
+                }) {
+                    return Err(Error::new(
+                        "REVISION_CHANGED",
+                        "index generation changed; repeat search",
+                        6,
+                    ));
+                }
+                Ok(response)
+            } else {
+                app.read(reference, *raw, &page.options())
+            }
+        }
         Command::Search {
             query,
             bundles,
             page,
-        } => app.search(query, bundles, &page.options()),
-        Command::Validate { name, page } => app.validate(
+            full_text,
+        } => {
+            if *full_text {
+                if bundles.len() != 1 {
+                    return Err(Error::new(
+                        "INVALID_ARGUMENT",
+                        "--full-text requires exactly one --bundle",
+                        2,
+                    ));
+                }
+                app.indexed_search(
+                    query,
+                    &bundles[0],
+                    &page.options(),
+                    &SqliteIndex::open(&home.join("content.sqlite"))?,
+                    false,
+                )
+            } else {
+                app.search(query, bundles, &page.options())
+            }
+        }
+        Command::Sync { name, page } => app.sync(
             name,
             &ReadOptions {
                 limit: 0,
@@ -443,6 +671,31 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 max_scan: page.max_scan,
                 cursor: None,
             },
+            &SqliteIndex::open(&home.join("content.sqlite"))?,
+        ),
+        Command::Index { command } => {
+            let index = SqliteIndex::open(&home.join("content.sqlite"))?;
+            match command {
+                IndexCommand::Status { name } => app.index_status(name, &index),
+                IndexCommand::Clear { name } => {
+                    index.clear(&app.binding(name)?.index_key())?;
+                    Ok(Response::new("index clear", json!({"cleared":name})))
+                }
+            }
+        }
+        Command::Validate {
+            name,
+            page,
+            max_resources,
+        } => app.validate_with_resources(
+            name,
+            &ReadOptions {
+                limit: 0,
+                budget: 0,
+                max_scan: page.max_scan,
+                cursor: None,
+            },
+            *max_resources,
         ),
         Command::Status { name } => {
             let bindings = if let Some(name) = name {
@@ -461,11 +714,11 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             "doctor",
             json!({"version": env!("CARGO_PKG_VERSION"),
             "home": home, "project": registry.project, "bundles": registry.list()?.len(),
-            "adapters": ["fs"], "sqlite": "ready", "entrypoint": "cli"}),
+            "adapters": ["fs", "git"], "sqlite": "ready", "entrypoint": "cli"}),
         )),
-        Command::Skill { .. } => unreachable!(),
+        Command::Skill { .. } | Command::Cache { .. } => unreachable!(),
     }?;
-    if let Err(error) = &cache_result {
+    if let Some(Err(error)) = &cache_result {
         if !response
             .diagnostics
             .iter()
