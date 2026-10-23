@@ -7,6 +7,7 @@ use std::fmt;
 mod computation;
 pub mod markdown;
 mod metadata;
+pub mod sections;
 mod yaml_value;
 pub use metadata::validate_reserved;
 

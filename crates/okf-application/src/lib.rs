@@ -1,7 +1,10 @@
 //! Application use cases depend on ports, never on an OS or storage implementation.
 mod control;
+mod filter;
 mod index;
+mod neighbors;
 mod resources;
+pub use filter::SearchFilter;
 pub use index::{Index, IndexedDocument, Snapshot, MAX_INDEX_BYTES};
 mod service;
 use chrono::{DateTime, Utc};

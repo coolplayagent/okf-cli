@@ -38,6 +38,7 @@ fn command(root: &Path) -> Command {
         }
     }
     cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("LC_ALL", "C")
         .env(
             "GIT_CONFIG_GLOBAL",
             if cfg!(windows) { "NUL" } else { "/dev/null" },
@@ -106,7 +107,20 @@ fn stop(child: &mut std::process::Child) {
 }
 
 fn run(root: &Path, args: &[&str], max: usize, control: &RequestControl) -> Result<Vec<u8>> {
+    run_bounded(root, args, max, control, None)
+}
+
+fn run_bounded(
+    root: &Path,
+    args: &[&str],
+    max: usize,
+    control: &RequestControl,
+    storage_limit: Option<u64>,
+) -> Result<Vec<u8>> {
     control.check()?;
+    if let Some(limit) = storage_limit {
+        check_storage(root, limit, control)?;
+    }
     let mut child = command(root)
         .args(args)
         .stdin(Stdio::null())
@@ -146,8 +160,15 @@ fn run(root: &Path, args: &[&str], max: usize, control: &RequestControl) -> Resu
     let out = thread::spawn(move || collect(stdout, max, over));
     let over = overflow.clone();
     let err = thread::spawn(move || collect(stderr, 65536, over));
+    let mut last_storage_check = std::time::Instant::now();
     let status = loop {
-        let stopped = control.check().err().or_else(|| {
+        let storage_error = if last_storage_check.elapsed() >= Duration::from_millis(50) {
+            last_storage_check = std::time::Instant::now();
+            storage_limit.and_then(|limit| check_storage(root, limit, control).err())
+        } else {
+            None
+        };
+        let stopped = control.check().err().or(storage_error).or_else(|| {
             overflow.load(Ordering::Relaxed).then(|| {
                 Error::new(
                     "GIT_OUTPUT_LIMIT",
@@ -177,11 +198,14 @@ fn run(root: &Path, args: &[&str], max: usize, control: &RequestControl) -> Resu
         .join()
         .map_err(|_| Error::new("GIT_ERROR", "output reader failed", 5))?
         .map_err(Error::io)?;
-    let _stderr = err
+    let stderr = err
         .join()
         .map_err(|_| Error::new("GIT_ERROR", "error reader failed", 5))?
         .map_err(Error::io)?;
     control.check()?;
+    if let Some(limit) = storage_limit {
+        check_storage(root, limit, control)?;
+    }
     if overflow.load(Ordering::Relaxed) {
         return Err(Error::new(
             "GIT_OUTPUT_LIMIT",
@@ -191,11 +215,122 @@ fn run(root: &Path, args: &[&str], max: usize, control: &RequestControl) -> Resu
     }
     if !status.success() {
         // stderr can contain credential material or repository-specific commands.
+        if args.first() == Some(&"fetch") {
+            return Err(transport_error(&String::from_utf8_lossy(&stderr)));
+        }
         return Err(Error::new(
             "GIT_OBJECT_UNAVAILABLE",
             "Git operation failed; repository, ref, object or transport is unavailable",
             5,
         ));
+    }
+    Ok(bytes)
+}
+
+fn transport_error(stderr: &str) -> Error {
+    let text = stderr.to_ascii_lowercase();
+    let (code, message) = if text.contains("401")
+        || text.contains("403")
+        || text.contains("authentication failed")
+        || text.contains("could not read username")
+    {
+        (
+            "GIT_AUTH_FAILED",
+            "remote denied access or requires authentication",
+        )
+    } else if text.contains("certificate")
+        || text.contains("ssl peer")
+        || text.contains("sec_e_untrusted_root")
+        || text.contains("sec_e_wrong_principal")
+        || text.contains("sec_e_cert_expired")
+    {
+        ("GIT_TLS_FAILED", "remote TLS verification failed")
+    } else if text.contains("couldn't find remote ref")
+        || text.contains("not our ref")
+        || text.contains("404")
+        || (text.contains("repository") && text.contains("not found"))
+    {
+        (
+            "GIT_REMOTE_NOT_FOUND",
+            "remote repository or requested ref is unavailable",
+        )
+    } else {
+        (
+            "GIT_TRANSPORT_FAILED",
+            "remote transfer failed or was interrupted",
+        )
+    };
+    Error::new(code, message, 5)
+}
+
+// A sampled disk quota, not a wire-byte limit: Git may write one chunk before
+// the next checkpoint. No content is read and symbolic directories are rejected.
+fn object_metadata(path: &Path) -> Result<std::fs::Metadata> {
+    let metadata = path.symlink_metadata().map_err(Error::io)?;
+    validate_object_metadata(metadata)
+}
+
+fn validate_object_metadata(metadata: std::fs::Metadata) -> Result<std::fs::Metadata> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(Error::new(
+                "PATH_ESCAPE",
+                "object cache must not contain reparse points",
+                4,
+            ));
+        }
+    }
+    if metadata.file_type().is_symlink() {
+        return Err(Error::new(
+            "PATH_ESCAPE",
+            "object cache must not contain symbolic links",
+            4,
+        ));
+    }
+    Ok(metadata)
+}
+
+fn check_storage(root: &Path, limit: u64, control: &RequestControl) -> Result<u64> {
+    let mut pending = vec![root.join("objects")];
+    let mut bytes = 0u64;
+    let mut entries = 0;
+    while let Some(path) = pending.pop() {
+        control.check()?;
+        object_metadata(&path)?;
+        for entry in std::fs::read_dir(path).map_err(Error::io)? {
+            control.check()?;
+            entries += 1;
+            if entries > 100_000 {
+                return Err(Error::new(
+                    "GIT_STORAGE_LIMIT",
+                    "object inventory exceeds entry budget",
+                    7,
+                ));
+            }
+            let entry = entry.map_err(Error::io)?;
+            // Git renames temporary pack/loose objects during a fetch. A sampled
+            // inventory may see an entry just before that name disappears; the
+            // final inventory after Git exits still enforces the storage quota.
+            let metadata = match entry.path().symlink_metadata() {
+                Ok(metadata) => validate_object_metadata(metadata)?,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(Error::io(error)),
+            };
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else {
+                bytes = bytes.saturating_add(metadata.len());
+            }
+            if bytes > limit {
+                return Err(Error::new(
+                    "GIT_STORAGE_LIMIT",
+                    "Git object storage budget exceeded; existing binding retained",
+                    7,
+                ));
+            }
+        }
     }
     Ok(bytes)
 }
@@ -346,11 +481,12 @@ impl Git {
     }
 
     /// HTTPS only; no interactive prompts, repository hooks or recursive submodules.
-    pub fn fetch(
+    pub fn fetch_bounded(
         root: &Path,
         remote: &str,
         reference: &str,
         control: &RequestControl,
+        max_bytes: u64,
     ) -> Result<String> {
         if !remote.starts_with("https://")
             || remote[8..].contains('@')
@@ -373,7 +509,7 @@ impl Git {
             .map_err(Error::io)?
             .as_nanos();
         let destination = format!("refs/okf/fetch-{}-{token}", std::process::id());
-        run(
+        run_bounded(
             root,
             &[
                 "fetch",
@@ -386,6 +522,7 @@ impl Git {
             ],
             65536,
             control,
+            Some(max_bytes),
         )?;
         Ok(destination)
     }
@@ -393,6 +530,43 @@ impl Git {
         std::fs::create_dir_all(root).map_err(Error::io)?;
         run(root, &["init", "--bare", "--template="], 65536, control)?;
         Ok(())
+    }
+
+    /// Serialize writes to an already initialized, tool-managed bare repository.
+    pub fn lock(root: &Path) -> Result<std::fs::File> {
+        let guard = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join("okf-cache.guard"))
+            .map_err(Error::io)?;
+        guard
+            .try_lock()
+            .map_err(|_| Error::new("GIT_CACHE_LOCKED", "another cache writer is active", 5))?;
+        Ok(guard)
+    }
+
+    /// Repack without expiring refs or unreachable objects; all pinned commits survive.
+    pub fn cache(
+        root: &Path,
+        compact: bool,
+        control: &RequestControl,
+    ) -> Result<serde_json::Value> {
+        let _guard = Self::lock(root)?;
+        let before = check_storage(root, u64::MAX, control)?;
+        if compact {
+            run(
+                root,
+                &["repack", "-a", "-d", "--keep-unreachable"],
+                65536,
+                control,
+            )?;
+        }
+        let after = check_storage(root, u64::MAX, control)?;
+        Ok(
+            serde_json::json!({"before_bytes":before,"object_bytes":after,"compacted":compact,"historical_objects_retained":true}),
+        )
     }
 }
 
