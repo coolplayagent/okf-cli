@@ -1,5 +1,7 @@
 # okf-cli
 
+当前版本为 `0.1.0-alpha.1` 预览版，适合试用和集成验证；接口与数据库格式仍可能变化。支持平台、安装方法和已知限制见 [发行说明](docs/releases.md)。
+
 面向 Agent 的 [Open Knowledge Format（OKF）](https://github.com/GoogleCloudPlatform/open-knowledge-format/blob/main/SPEC.md) 知识消费 CLI。注册知识包，通过概览、目录、检索和原文读取逐步获取任务所需的知识。
 
 知识包内容保持只读，读取结果提供知识包、文件定位和后续导航，便于 Agent 继续探索和引用。
