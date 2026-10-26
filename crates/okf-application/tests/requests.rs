@@ -123,6 +123,24 @@ struct InterruptingIndex {
     calls: AtomicUsize,
 }
 impl okf_application::Index for InterruptingIndex {
+    fn verify(
+        &self,
+        _: &str,
+        _: usize,
+        _: &RequestControl,
+    ) -> Result<Option<okf_application::IndexVerification>> {
+        self.cancelled.store(true, Ordering::Relaxed);
+        Ok(Some(okf_application::IndexVerification {
+            generation: "v1".into(),
+            documents_total: 3,
+            documents_checked: 1,
+            bytes_checked: 30,
+            complete: false,
+            failures: 0,
+            findings: vec![],
+            interruption: Some(Error::new("CANCELLED", "cancelled during verification", 7)),
+        }))
+    }
     fn load(&self, _: &str) -> Result<Option<okf_application::Snapshot>> {
         panic!("full snapshot load is forbidden")
     }
@@ -167,6 +185,35 @@ impl okf_application::Index for InterruptingIndex {
     fn clear(&self, _: &str) -> Result<()> {
         unreachable!()
     }
+}
+
+#[test]
+fn index_verification_preserves_partial_progress_on_cancellation() {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let control = RequestControl::new(Duration::from_secs(30), cancelled.clone());
+    let reader = Reader {
+        cancelled: cancelled.clone(),
+        calls: AtomicUsize::new(0),
+        stop_on_second: false,
+    };
+    let index = InterruptingIndex {
+        cancelled,
+        calls: AtomicUsize::new(0),
+    };
+    let app = App {
+        registry: &Registry,
+        reader: &reader,
+        cache: &ObservationCache { fail: false },
+        now: Utc::now(),
+        control: &control,
+    };
+    let response = app.index_verify("book", 100, &index).unwrap();
+    assert_eq!(response.exit_code, 7);
+    assert_eq!(response.data["documents_checked"], 1);
+    assert_eq!(response.data["complete"], false);
+    assert!(response.data["valid"].is_null());
+    assert_eq!(response.diagnostics[0].code, "CANCELLED");
+    assert_eq!(reader.calls.load(Ordering::Relaxed), 0);
 }
 
 #[test]
