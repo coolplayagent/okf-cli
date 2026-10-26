@@ -1,0 +1,38 @@
+{
+  "as_of": "2030-01-01T00:00:00Z",
+  "bundles": {
+    "handbook": {
+      "sync": true,
+      "documents": {
+        "retry.md": "---\ntype: Runbook\ntitle: retry policy\nverified: {by: 'human:alice', at: '2029-01-01T00:00:00Z'}\nstale_after: '2031-01-01T00:00:00Z'\n---\n# Retry\nRetry at most three times.\n",
+        "shared.md": "---\ntype: Note\ntitle: shared evidence\n---\n# Recovery\n认证 recovery requires rotation.\n"
+      }
+    },
+    "operations": {
+      "sync": true,
+      "documents": {
+        "retry.md": "---\ntype: Runbook\ntitle: retry policy\nverified: {by: 'process:ci', at: '2029-01-01T00:00:00Z'}\nstale_after: '2031-01-01T00:00:00Z'\n---\n# Retry\nRetry at most five times.\n",
+        "shared.md": "---\ntype: Note\ntitle: shared evidence\n---\n# Recovery\n认证 recovery requires rotation.\n"
+      }
+    },
+    "legacy": {
+      "sync": true,
+      "documents": {
+        "retry.md": "---\ntype: Runbook\ntitle: retry policy\nstale_after: '2029-01-01T00:00:00Z'\n---\n# Retry\nRetry indefinitely.\n"
+      }
+    },
+    "unsynced": {
+      "sync": false,
+      "documents": {
+        "retry.md": "---\ntype: Note\ntitle: retry policy\n---\nNo published index.\n"
+      }
+    }
+  },
+  "tasks": [
+    {"id": "same-path-conflicting-evidence", "query": "retry", "filters": [], "expected": {"@handbook/retry": "three times", "@operations/retry": "five times", "@legacy/retry": "indefinitely"}},
+    {"id": "retain-duplicate-sources", "query": "认证", "filters": [], "expected": {"@handbook/shared": "rotation", "@operations/shared": "rotation"}},
+    {"id": "exclude-expired-evidence", "query": "retry", "filters": ["--expiry", "current"], "expected": {"@handbook/retry": "three times", "@operations/retry": "five times"}},
+    {"id": "human-reviewed-evidence", "query": "retry", "filters": ["--trust", "human-reviewed"], "expected": {"@handbook/retry": "three times"}},
+    {"id": "no-answer-with-unavailable-index", "query": "nonexistent-evidence", "filters": [], "expected": {}}
+  ]
+}

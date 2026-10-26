@@ -28,6 +28,7 @@
 | `index status NAME` / `index clear NAME` | 查看或清理正文索引 |
 | `cache reset` | 归档观测数据库及 sidecar 后重建，活动读取者存在时拒绝 |
 | `doctor` | 查看版本、运行目录、项目目录、知识包数量和缓存可用性 |
+| `build-info` | 读取内嵌版本、Rust target、构建提交和未提交修改标记；不访问配置或缓存 |
 | `skill install PATH` | 将内置消费 Skill 写入指定目录 |
 | `help [COMMAND]` / `--help` | 显示文本帮助 |
 
@@ -117,6 +118,10 @@
 
 `search` 与 `context --query` 支持 `--type`、`--tag`、`--status` 精确匹配；同一选项重复表示 OR，不同字段之间为 AND，大小写敏感。筛选发生在结果截断之前，实时与索引模式采用相同规则。不带查询的概览拒绝这些筛选选项。
 
+`--trust` 接受 `unverified`、`machine-confirmed`、`human-reviewed`；`--expiry` 接受 `current`、`expired`、`unspecified`、`unknown`，同样支持重复取值。未声明有效期与日期无效分别为 `unspecified` 和 `unknown`。默认不按审核层级或有效期排除结果。
+
+`--as-of TIMESTAMP` 只用于搜索和查询上下文，接受带 UTC 偏移的 RFC 3339 时间，默认使用请求时间。结果的 `data.evaluated_at` 记录归一化后的 UTC 时间；到达 `stale_after` 时即为过期。索引查询从已保存的原文按本次评估时间派生有效期，不沿用同步时的结论。它不改变观测时间、索引 generation 或缓存记录中的真实观测时间；未知元数据值的诊断仍保留。`--as-of` 不证明当时的源文件内容。
+
 查询按空白拆词，忽略大小写，并要求所有词都在卡片的检索字段中出现。支持中文子串，结果按知识包引用排序。`context --query` 复用元数据检索，返回 `disclosure: metadata_candidates` 与 `read` 入口。
 
 全文模式要求每个词出现在卡片或正文中，元数据命中每词计 5 分、仅正文命中每词计 1 分，同分按引用排序。它是确定性子串检索，未使用向量或分词模型。结果的 `snippet` 含原始字节范围与文本，普通片段最多 512 字节，正文上下文最多 4096 字节，均受整体条目预算约束。标题边界来自 Markdown 解析器，代码块中的 `#` 不作为标题。上下文从包含命中的最近章节开始，在下一个同级或上级标题前结束；标题距命中过远时从命中字节位置开始。每份文档只返回一个窗口，避免同一文档的重叠片段；不合并不同文件的来源。`coverage_gaps` 表达未选命中和未检查实时文件的事实。
@@ -125,7 +130,7 @@
 
 正文片段使用的标题清单每文件最多 4096 项；超过时返回 `SECTION_LIMIT` 和部分结果，片段仍保留精确字节定位，但章节边界可能不完整。
 
-卡片中的 `trust`、`status` 和 `expiry` 从元数据派生。审核层级为 `unverified`、`machine-confirmed` 或 `human-reviewed`；过期状态为 `unspecified`、`current`、`expired` 或 `unknown`。默认值与异常值的处理见 [派生与覆盖](okf-validation.md#派生与覆盖)。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
+卡片中的 `trust`、`status` 和 `expiry` 从元数据派生，默认值与异常值的处理见 [派生与覆盖](okf-validation.md#派生与覆盖)。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
 
 ## 故障与覆盖
 
@@ -162,7 +167,7 @@
 
 `page.total` 可以为 null；`has_more=false` 只说明该操作没有续页，不证明全库扫描完整。卡片返回也不意味着 Agent 已读取正文。
 
-`diagnostics[].severity` 为 `error` 或 `warning`。元数据及正文警告的 `path` 为完整文件引用，如 `@handbook/services/auth.md`；元数据的 `field` 为 frontmatter 的 JSON Pointer，如 `/verified/0/at`。正文、操作或文档级诊断的 `field` 为 null，包括截断提示。警告不改变执行状态或元数据覆盖；仍应结合 `status`、退出码与检查完整性判断结果。诊断条数规则见 [诊断上限](okf-validation.md#诊断上限)。
+`diagnostics[].severity` 为 `error` 或 `warning`。元数据及正文警告的 `path` 为完整文件引用，如 `@handbook/services/auth.md`；元数据的 `field` 为 frontmatter 的 JSON Pointer，如 `/verified/0/at`。正文、操作或文档级诊断的 `field` 为 null，包括截断提示。默认情况下，警告不改变执行状态或元数据覆盖；显式启用质量门槛时按下文规则判定退出码。诊断条数规则见 [诊断上限](okf-validation.md#诊断上限)。
 
 正文诊断通过可选的 `location: {byte_start, byte_end}` 标识完整原文件中的 UTF-8 字节半开区间，包含 BOM、frontmatter 与换行所占字节；它不相对于当前读取分页。没有具体正文位置的诊断省略此字段。
 
@@ -184,5 +189,9 @@
 完整合规检查发现错误时为 `status: error`、退出码 1，缓存不可用诊断不会覆盖这个结果；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。文件过大和输出超限也使用退出码 7，但响应为 `error`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
 
 `validate` 返回 `data.failures` 与 `data.warnings`，分别统计失败文件与返回的元数据、正文及资源警告。只有警告且检查完成时仍为 `ok`、退出码 0。
+
+显式指定 `validate --max-warnings N`（允许 0）启用质量门槛。`data.quality_gate` 返回 `max_warnings`、`warnings_observed`、`warnings_total`、`complete` 和 `passed`。观测数不包含诊断截断提示；完整时总数等于观测数，不完整时总数为 null。已观测数量超过门槛即确定 `passed: false`；未超过且统计不完整时为 null，只有完整且未超过时才为 true。
+
+扫描、链接或资源预算耗尽，读取失败，诊断截断，以及已启用检查中的未知目标都会阻止门槛通过。完整检查超限返回 `WARNING_LIMIT_EXCEEDED`、退出码 1；不完整检查优先保持退出码 7，只有警告截断等导致计数不完整而此前尚未标记部分结果时增加 `QUALITY_GATE_INCOMPLETE`。已确定的结构错误保留退出码 1；缓存等操作错误不会被质量门槛覆盖。即使 `passed: true`，仍需检查响应执行状态。默认未指定门槛时行为不变。
 
 Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际读取的文件、字节范围和内容哈希，并保留影响答案的过期、审核和覆盖限定。消费流程见 [消费 Skill](../skills/okf-consume/SKILL.md)。

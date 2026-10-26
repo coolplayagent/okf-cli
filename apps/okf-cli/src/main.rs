@@ -131,10 +131,15 @@ enum Command {
         /// Opt in to a deterministic heading-ID profile; custom HTML remains unknown.
         #[arg(long, value_parser = ["headings-v1"])]
         anchor_style: Option<String>,
+        /// Fail the quality gate when warnings exceed this count (default: no gate).
+        #[arg(long)]
+        max_warnings: Option<u64>,
         #[command(flatten)]
         page: ScanArgs,
     },
     Doctor,
+    /// Read embedded build provenance without opening configuration or caches.
+    BuildInfo,
     /// Atomically publish a complete bounded scan into the offline content index.
     Sync {
         name: String,
@@ -228,6 +233,15 @@ struct FilterArgs {
     /// Exact lifecycle status match; repeat for alternatives.
     #[arg(long = "status")]
     statuses: Vec<String>,
+    /// Exact derived review tier; repeat for alternatives.
+    #[arg(long = "trust", value_parser = ["unverified", "machine-confirmed", "human-reviewed"])]
+    trusts: Vec<String>,
+    /// Declared expiry state; repeat for alternatives.
+    #[arg(long = "expiry", value_parser = ["current", "expired", "unspecified", "unknown"])]
+    expiries: Vec<String>,
+    /// Evaluate lifecycle at this RFC 3339 timestamp with an explicit UTC offset.
+    #[arg(long, value_parser = parse_as_of)]
+    as_of: Option<chrono::DateTime<chrono::Utc>>,
 }
 impl FilterArgs {
     fn value(&self) -> okf_application::SearchFilter {
@@ -235,11 +249,25 @@ impl FilterArgs {
             types: self.types.clone(),
             tags: self.tags.clone(),
             statuses: self.statuses.clone(),
+            trusts: self.trusts.clone(),
+            expiries: self.expiries.clone(),
+            as_of: self.as_of,
         }
     }
     fn is_empty(&self) -> bool {
-        self.types.is_empty() && self.tags.is_empty() && self.statuses.is_empty()
+        self.types.is_empty()
+            && self.tags.is_empty()
+            && self.statuses.is_empty()
+            && self.trusts.is_empty()
+            && self.expiries.is_empty()
+            && self.as_of.is_none()
     }
+}
+
+fn parse_as_of(value: &str) -> std::result::Result<chrono::DateTime<chrono::Utc>, String> {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|time| time.with_timezone(&chrono::Utc))
+        .map_err(|_| "expected an RFC 3339 timestamp with an explicit UTC offset".into())
 }
 
 #[derive(Args)]
@@ -406,6 +434,17 @@ fn argument_output_limit(args: &[String]) -> usize {
 
 fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
     control.check()?;
+    if matches!(cli.command, Command::BuildInfo) {
+        return Ok(Response::new(
+            "build-info",
+            json!({
+                "version": env!("CARGO_PKG_VERSION"),
+                "target": env!("OKF_BUILD_TARGET"),
+                "source_commit": match env!("OKF_BUILD_COMMIT") { "unknown" => None, value => Some(value) },
+                "source_dirty": match env!("OKF_BUILD_DIRTY") { "true" => Some(true), "false" => Some(false), _ => None }
+            }),
+        ));
+    }
     // Skill installation does not open the registry or database.
     if let Command::Skill {
         command: SkillCommand::Install { path },
@@ -835,6 +874,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             max_resources,
             attachments,
             anchor_style,
+            max_warnings: _,
         } => app.validate_with_checks(
             name,
             &ReadOptions {
@@ -866,7 +906,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             "home": home, "project": registry.project, "bundles": registry.list()?.len(),
             "adapters": ["fs", "git"], "sqlite": "ready", "entrypoint": "cli"}),
         )),
-        Command::Skill { .. } | Command::Cache { .. } => unreachable!(),
+        Command::Skill { .. } | Command::Cache { .. } | Command::BuildInfo => unreachable!(),
     }?;
     if let Some(Err(error)) = &cache_result {
         if !response
@@ -884,6 +924,13 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 response.partial("CACHE_UNAVAILABLE", &error.message);
             }
         }
+    }
+    if let Command::Validate {
+        max_warnings: Some(limit),
+        ..
+    } = &cli.command
+    {
+        response.apply_warning_limit(*limit);
     }
     Ok(response)
 }
