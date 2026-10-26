@@ -32,6 +32,7 @@ jobs:
           path: |
             target/verification/retrieval.json
             target/verification/multi-bundle.json
+            target/verification/budgets.json
             target/verification/https/
           if-no-files-found: ignore
   lint:

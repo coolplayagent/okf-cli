@@ -84,6 +84,7 @@ okf search "认证" --bundle handbook --full-text --format json
 okf context --query "认证" --bundle handbook --content --format json
 okf read @handbook/services/auth --indexed --format json
 okf index status handbook
+okf index verify handbook --max-scan 10000 --format json
 okf search "认证" --bundle handbook --full-text --type Service --tag security
 okf search "认证" --bundle handbook --full-text --trust human-reviewed --expiry current
 okf neighbors @handbook/services/auth --direction incoming --format json
@@ -92,6 +93,8 @@ okf neighbors @handbook/services/auth --direction incoming --format json
 全文检索与上下文选择可重复指定 `--bundle` 查询多个知识包，共用请求预算；各结果保留自己的 generation、内容哈希和原文字节范围。离线索引代表上次成功同步的内容。扫描不完整时不会替换旧索引。
 
 使用 `okf cache reset` 将历史卡片缓存归档后重建；`okf index clear NAME` 清理指定知识包的正文索引。两者均保留知识包与绑定。
+
+`index verify` 只读检查索引路径、哈希、文档版本和快照清单，不访问源文件。检查不完整且尚未发现问题时，`data.valid` 为 null；已发现损坏时为 false。使用 `sync NAME` 从源文件重新发布完整索引以修复损坏，详细语义见 [索引完整性检查](docs/cli-contract.md#索引完整性检查)。
 
 使用 `--format json` 获取机器可读结果。目录和原文分页时，将 `page.next_cursor` 传入同一命令的 `--cursor` 参数继续读取。可通过 `okf <命令> --help` 查看选项，通过 [CLI 参考](docs/cli-contract.md) 了解预算、诊断和覆盖范围。
 
@@ -133,7 +136,7 @@ python scripts/check_delivery.py target/release/okf
 python scripts/evaluate.py target/release/okf target/verification/retrieval-1000.json --scale 1000
 ```
 
-`check_delivery.py` 校验响应 Schema、本地 HTTPS Git 流程与故障、单包检索及逐包/多包查询对比、发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
+`check_delivery.py` 校验响应 Schema、索引完整性与同步修复、本地 HTTPS Git 流程与故障、单包与多包检索及有限预算评测、发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
 
 固定版本的上游语料位于 `fixtures/upstream`。需要单独测量性能基线时执行：
 

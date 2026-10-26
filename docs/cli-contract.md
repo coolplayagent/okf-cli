@@ -26,6 +26,7 @@
 | `read REF --indexed [--generation GENERATION]` | 离线读取索引原文，可要求与检索结果版本一致 |
 | `neighbors REF [--direction incoming\|outgoing\|both]` | 从同步索引查询有证据的直接关系，默认 `both` |
 | `index status NAME` / `index clear NAME` | 查看或清理正文索引 |
+| `index verify NAME` | 只读检查正文索引的路径、哈希、版本与快照清单 |
 | `cache reset` | 归档观测数据库及 sidecar 后重建，活动读取者存在时拒绝 |
 | `doctor` | 查看版本、运行目录、项目目录、知识包数量和缓存可用性 |
 | `build-info` | 读取内嵌版本、Rust target、构建提交和未提交修改标记；不访问配置或缓存 |
@@ -77,6 +78,7 @@
 | `neighbors` | 20 | 16384 | 100 | — | 30000 |
 | `validate` | — | — | 100 | — | 30000 |
 | `sync` | — | — | 100 | — | 30000 |
+| `index verify` | — | — | 100 | — | 30000 |
 
 `--full-text`、`--content` 和 `--indexed` 沿用对应命令的预算与分页参数。全文检索的 `--max-scan` 限制评估的概念数量，`indexed_documents_scanned` 返回实际数量。单包索引总正文上限 64 MiB、文档数量上限 100000；索引单文件读取上限 2 MiB。`validate --max-resources N` 控制资源声明数量，默认 4096，允许 1–10000；声明字符串另有 2 MiB 总上限。
 
@@ -139,6 +141,16 @@
 多包查询中的缺失、损坏或读取期间变化的索引产生带包路径的诊断，保留其他包结果并返回退出码 7。无法读取的包列入 `coverage_gaps.unavailable_bundles`；任何包未完成评估时 `page.total` 为 null。有效包的观测包含 `scan_limit` 和 `indexed_documents_scanned`。单包请求仍直接返回对应错误；未知或有歧义的绑定在查询前拒绝。
 
 `index status` 只查询索引元信息和统计，不验证正文完整性。`read --indexed` 在同一事务中读取版本与目标文档，仅验证该文档哈希；全文查询验证扫描配额内的正文。哈希不匹配返回 `INDEX_CORRUPT`，可重新执行 `sync NAME` 从源文件恢复正文；源内容未变时 generation 保持不变。
+
+## 索引完整性检查
+
+`index verify NAME` 使用只读数据库连接，在同一事务快照内检查所有类型的索引文档，包括保留文件。按路径检查合法性、正文 SHA-256 和文档 generation；完整扫描后，再从保存的路径、哈希和上游修订重算快照 generation。它不验证源文件新鲜度，也不替代 `validate` 的格式检查。
+
+`data.documents_total` 为当前快照的文档数，`documents_checked` 为本次已检查数量，`complete` 表示检查是否完成。`valid` 只有在完整检查且无问题时为 true；已发现问题时为 false；未完成且尚无问题时为 null。`failures` 统计发现的问题数，一份文档可有多个问题；完整性问题最多保留 100 项诊断，超出时 `findings_truncated` 为 true，问题计数继续累加。扫描上限、截止时间或取消诊断另行保留。
+
+完整且无问题返回 0，完整且发现损坏返回 5；扫描、64 MiB 检查预算或截止时间耗尽、取消时返回 7，保留已完成的检查结果，即使已发现损坏。单份正文超过 2 MiB 时报告 `INDEX_DOCUMENT_LIMIT`。其他完整性诊断包括 `INDEX_PATH_INVALID`、`INDEX_CORRUPT`、`INDEX_GENERATION_MISMATCH` 和 `INDEX_SNAPSHOT_MISMATCH`。缺失索引返回 3，且不创建正文数据库；不支持的数据库版本返回 `INDEX_VERSION`（2），不执行迁移。检查不会修复内容；显式 `sync` 在事务内重建该包的完整文档清单，包括移除多余记录。
+
+`budget.scan_limit` 和 `indexed_documents_scanned` 记录文档扫描上限及实际数量，`index_bytes_limit` 和 `index_bytes_checked` 记录正文检查的累计字节上限及计数。`data.live_files_checked` 固定为 false。
 
 ## 故障与覆盖
 

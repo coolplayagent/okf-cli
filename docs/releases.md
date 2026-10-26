@@ -26,7 +26,7 @@ python -m pip install -r scripts/requirements-test.txt
 python scripts/check_delivery.py target/release/okf
 ```
 
-Windows 使用 `target/release/okf.exe`。验收检查 Schema、打包拒绝条件、本地 HTTPS Git、检索及跨包基线，并在解压包中核对哈希、构建信息和内置 Skill 后运行独立验收。产物位于 `target/dist`，本地开发包允许记录 `source_dirty: true`。
+Windows 使用 `target/release/okf.exe`。验收范围见 [开发检查](../README.md#开发)，包括索引完整性与修复、有限预算评测，以及解压包的哈希、构建信息、内置 Skill 和独立运行检查。产物位于 `target/dist`，本地开发包允许记录 `source_dirty: true`。
 
 准备正式版本时，先统一 workspace 版本、Cargo.lock 与变更记录，提交到干净工作区，再创建对应 `vVERSION` tag。带 tag 验收：
 
@@ -44,3 +44,17 @@ python scripts/check_delivery.py target/release/okf --tag vVERSION
 `Package binaries` 工作流在 tag 推送和手动运行时生成三平台产物；tag 构建自动执行上述严格校验。手动运行时选择版本 tag 并启用 `create_draft`，三平台验收通过后才创建带附件的 GitHub Release 草稿。分支运行不能创建草稿。工作流不会覆盖已存在的同名 Release，也不自动发布草稿。
 
 正式发布前检查草稿附件、支持平台、系统依赖和变更说明，再单独发布。仅打包任务具有只读仓库权限；创建草稿的任务单独获得 contents 写权限。
+
+## 三平台打包实测
+
+2026-10-26 对已合并提交 `ab4f735` 手动执行 [Package binaries](https://github.com/coolplayagent/okf-cli/actions/runs/40263932075)，三平台构建、交付验收与产物上传全部通过。下载后再次核对了三个压缩包及包内文件哈希，manifest 均记录同一提交和干净源码。这是工作流产物验收，未创建 tag、Release 草稿或正式版本；本轮新增 `index verify` 等未提交修改不在这些远端产物中。
+
+| 产物目标 | 本次二进制的运行库要求 |
+| --- | --- |
+| `x86_64-unknown-linux-gnu` | ELF 版本依赖要求最高为 `GLIBC_2.39`，还依赖 `libgcc_s.so.1`（含 `GCC_4.2.0` 符号版本）、`libm.so.6` 和系统动态加载器 |
+| `x86_64-pc-windows-msvc` | 依赖 `VCRUNTIME140.dll`、UCRT 与 Windows 系统 DLL；无需 Rust 或 Python |
+| `aarch64-apple-darwin` | Mach-O deployment target 为 macOS 11.0，依赖系统 Foundation/CoreFoundation、libSystem、libobjc 和 libiconv |
+
+这些信息来自下载的二进制依赖记录。CI 运行成功只验证对应 runner 环境，deployment target 不等于已在最低系统版本实测。当前跟随 `*-latest` 构建，后续产物的运行库要求可能变化；正式发行前应固定构建环境和支持矩阵。Linux 更旧的 glibc 环境需重新构建兼容包。
+
+`python scripts/check_upgrade.py BEFORE AFTER` 在隔离目录中安装旧二进制、绑定并同步知识包、替换为新二进制后离线读取同一 generation，再回退并复核绑定与原文。CLI 子进程 PATH 不包含编译工具；Python 仅驱动验收。本轮已用上述 Windows MSVC 包与本地新增功能的 GNU 构建完成该流程。这验证的是指定二进制对和当前数据库格式，不承诺任意版本间可回退。

@@ -218,8 +218,21 @@ enum CacheCommand {
 }
 #[derive(Subcommand)]
 enum IndexCommand {
-    Status { name: String },
-    Clear { name: String },
+    Status {
+        name: String,
+    },
+    Clear {
+        name: String,
+    },
+    /// Check stored content and snapshot integrity without changing the index.
+    Verify {
+        name: String,
+        /// Maximum stored documents to check, including reserved files.
+        #[arg(long, default_value_t = 100, value_parser = parse_scan)]
+        max_scan: usize,
+        #[command(flatten)]
+        work: WorkArgs,
+    },
 }
 
 #[derive(Args, Default)]
@@ -384,6 +397,9 @@ impl Command {
             Self::Neighbors { page, .. } => Some(page.scan.work.timeout_ms),
             Self::Validate { page, .. } => Some(page.work.timeout_ms),
             Self::Sync { page, .. } => Some(page.work.timeout_ms),
+            Self::Index {
+                command: IndexCommand::Verify { work, .. },
+            } => Some(work.timeout_ms),
             Self::Bundle {
                 command:
                     BundleCommand::Refresh { work, .. }
@@ -845,8 +861,15 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             &SqliteIndex::open(&home.join("content.sqlite"))?,
         ),
         Command::Index { command } => {
-            let index = SqliteIndex::open(&home.join("content.sqlite"))?;
+            let path = home.join("content.sqlite");
+            let index = match command {
+                IndexCommand::Verify { .. } => SqliteIndex::open_read_only(&path)?,
+                _ => SqliteIndex::open(&path)?,
+            };
             match command {
+                IndexCommand::Verify { name, max_scan, .. } => {
+                    app.index_verify(name, *max_scan, &index)
+                }
                 IndexCommand::Status { name } => app.index_status(name, &index),
                 IndexCommand::Clear { name } => {
                     index.clear(&app.binding(name)?.index_key())?;

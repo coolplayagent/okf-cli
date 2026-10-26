@@ -29,6 +29,28 @@ pub struct IndexStats {
     pub concepts: usize,
     pub bytes: usize,
 }
+#[derive(Debug)]
+pub struct IndexVerification {
+    pub generation: String,
+    pub documents_total: usize,
+    pub documents_checked: usize,
+    pub bytes_checked: usize,
+    pub complete: bool,
+    pub failures: usize,
+    pub findings: Vec<(String, Error)>,
+    pub interruption: Option<Error>,
+}
+
+pub fn index_generation<'a>(
+    revision: Option<&str>,
+    entries: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<String> {
+    Ok(sha256(
+        &serde_json::to_vec(&(revision, entries.into_iter().collect::<Vec<_>>()))
+            .map_err(Error::io)?,
+    ))
+}
+
 pub trait Index {
     fn load(&self, key: &str) -> Result<Option<Snapshot>>;
     /// Metadata and counts only; does not load or verify document bodies.
@@ -37,6 +59,13 @@ pub trait Index {
     fn read(&self, key: &str, path: &str) -> Result<Option<Snapshot>>;
     /// Read at most `limit` concepts from the expected generation, ordered by path.
     fn search(&self, key: &str, generation: &str, limit: usize) -> Result<Option<Snapshot>>;
+    /// Inspect a bounded inventory in one snapshot, retaining findings and progress on interruption.
+    fn verify(
+        &self,
+        key: &str,
+        limit: usize,
+        control: &crate::RequestControl,
+    ) -> Result<Option<IndexVerification>>;
     /// Compare-and-swap publication. Incomplete scans must never call this method.
     fn publish(&self, key: &str, expected: Option<&str>, snapshot: &Snapshot) -> Result<()>;
     fn clear(&self, key: &str) -> Result<()>;
@@ -148,16 +177,10 @@ impl App<'_> {
         if complete {
             let documents: Vec<_> = documents.into_values().collect();
             let revision = binding.git.as_ref().map(|g| g.commit.clone());
-            let generation = sha256(
-                &serde_json::to_vec(&(
-                    revision.clone(),
-                    documents
-                        .iter()
-                        .map(|d| (&d.path, &d.hash))
-                        .collect::<Vec<_>>(),
-                ))
-                .map_err(Error::io)?,
-            );
+            let generation = index_generation(
+                revision.as_deref(),
+                documents.iter().map(|d| (d.path.as_str(), d.hash.as_str())),
+            )?;
             let snapshot = Snapshot {
                 generation,
                 upstream_revision: revision,
@@ -204,6 +227,55 @@ impl App<'_> {
             "upstream_revision":snapshot.upstream_revision,"matches_binding_revision":snapshot.upstream_revision==binding.git.as_ref().map(|g|g.commit.clone()),
             "view_kind":if binding.git.is_some() {"snapshot"} else {"observed"}}),
         ))
+    }
+
+    pub fn index_verify(&self, name: &str, limit: usize, index: &dyn Index) -> Result<Response> {
+        self.control.check()?;
+        let binding = self.binding(name)?;
+        let report = index
+            .verify(&binding.index_key(), limit, self.control)?
+            .ok_or_else(|| Error::new("INDEX_MISSING", "run sync for this bundle first", 3))?;
+        let valid = if report.failures > 0 {
+            Some(false)
+        } else if report.complete {
+            Some(true)
+        } else {
+            None
+        };
+        let mut response = Response::new(
+            "index verify",
+            json!({
+                "generation": report.generation, "documents_total": report.documents_total,
+                "documents_checked": report.documents_checked, "complete": report.complete,
+                "valid": valid, "failures": report.failures,
+                "findings_truncated": report.failures > report.findings.len(), "live_files_checked": false
+            }),
+        );
+        for (path, error) in &report.findings {
+            response.issue(
+                error,
+                &if path.is_empty() {
+                    format!("@{name}")
+                } else {
+                    format!("@{name}/{path}")
+                },
+            );
+        }
+        if let Some(error) = &report.interruption {
+            response.issue(error, &format!("@{name}"));
+        }
+        if report.complete && report.failures > 0 {
+            response.status = "error".into();
+            response.exit_code = 5;
+        }
+        response.budget = json!({"scan_limit":limit,"indexed_documents_scanned":report.documents_checked,
+            "index_bytes_limit":MAX_INDEX_BYTES,"index_bytes_checked":report.bytes_checked});
+        if report.failures > 0 {
+            response
+                .next
+                .push(json!({"operation":"sync","target":name}));
+        }
+        Ok(response)
     }
 
     pub fn indexed_search(

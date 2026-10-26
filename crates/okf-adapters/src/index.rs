@@ -1,5 +1,6 @@
 use okf_application::{
-    Index, IndexStats, IndexedDocument, Snapshot, MAX_INDEX_BYTES, MAX_INDEX_DOCUMENTS,
+    index_generation, Index, IndexStats, IndexVerification, IndexedDocument, RequestControl,
+    Snapshot, MAX_INDEX_BYTES, MAX_INDEX_DOCUMENTS,
 };
 use okf_core::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
@@ -7,6 +8,33 @@ use std::{path::Path, time::Duration};
 
 pub struct SqliteIndex(Connection);
 impl SqliteIndex {
+    pub fn open_read_only(path: &Path) -> Result<Self> {
+        if !path.try_exists().map_err(Error::io)? {
+            return Err(Error::new(
+                "INDEX_MISSING",
+                "run sync for this bundle first",
+                3,
+            ));
+        }
+        let connection =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+                .map_err(Error::io)?;
+        connection
+            .busy_timeout(Duration::from_secs(5))
+            .map_err(Error::io)?;
+        let version: i64 = connection
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(Error::io)?;
+        if version != 1 {
+            return Err(Error::new(
+                "INDEX_VERSION",
+                "unsupported content index schema",
+                2,
+            ));
+        }
+        Ok(Self(connection))
+    }
+
     pub fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(Error::io)?;
@@ -155,6 +183,128 @@ impl SqliteIndex {
     }
 }
 impl Index for SqliteIndex {
+    fn verify(
+        &self,
+        key: &str,
+        limit: usize,
+        control: &RequestControl,
+    ) -> Result<Option<IndexVerification>> {
+        control.check()?;
+        let tx = self.0.unchecked_transaction().map_err(Error::io)?;
+        let Some(header) = header(&tx, key)? else {
+            return Ok(None);
+        };
+        let total: usize = tx
+            .query_row(
+                "SELECT COUNT(*) FROM documents WHERE bundle=?1",
+                [key],
+                |r| r.get(0),
+            )
+            .map_err(Error::io)?;
+        let mut report = IndexVerification {
+            generation: header.generation.clone(),
+            documents_total: total,
+            documents_checked: 0,
+            bytes_checked: 0,
+            complete: false,
+            failures: 0,
+            findings: vec![],
+            interruption: None,
+        };
+        let mut entries = vec![];
+        let mut statement = tx
+            .prepare(
+                "SELECT path,hash,generation,length(CAST(raw AS BLOB)),
+            CASE WHEN length(CAST(raw AS BLOB))<=2097152 THEN raw ELSE NULL END
+            FROM documents WHERE bundle=?1 ORDER BY path LIMIT ?2",
+            )
+            .map_err(Error::io)?;
+        let mut rows = statement
+            .query(params![key, limit.min(MAX_INDEX_DOCUMENTS) as i64])
+            .map_err(Error::io)?;
+        loop {
+            if let Err(error) = control.check() {
+                report.interruption = Some(error);
+                break;
+            }
+            let Some(row) = rows.next().map_err(Error::io)? else {
+                break;
+            };
+            let path: String = row.get(0).map_err(Error::io)?;
+            let hash: String = row.get(1).map_err(Error::io)?;
+            let generation: String = row.get(2).map_err(Error::io)?;
+            let bytes: usize = row.get(3).map_err(Error::io)?;
+            if bytes > MAX_INDEX_BYTES.saturating_sub(report.bytes_checked) {
+                report.interruption = Some(Error::new(
+                    "INDEX_LIMIT",
+                    "index verification byte budget reached",
+                    7,
+                ));
+                break;
+            }
+            let raw: Option<String> = row.get(4).map_err(Error::io)?;
+            report.documents_checked += 1;
+            report.bytes_checked += bytes;
+            let mut finding = |code, message| {
+                report.failures += 1;
+                if report.findings.len() < 100 {
+                    report
+                        .findings
+                        .push((path.clone(), Error::new(code, message, 5)));
+                }
+            };
+            if okf_core::logical_path(&path).is_err() || !path.ends_with(".md") {
+                finding("INDEX_PATH_INVALID", "stored document path is invalid");
+            }
+            if generation != header.generation {
+                finding(
+                    "INDEX_GENERATION_MISMATCH",
+                    "document generation differs from snapshot",
+                );
+            }
+            match raw {
+                Some(raw) if okf_core::sha256(raw.as_bytes()) != hash => finding(
+                    "INDEX_CORRUPT",
+                    "stored content hash mismatch; run sync to rebuild",
+                ),
+                None => finding("INDEX_DOCUMENT_LIMIT", "stored document exceeds 2 MiB"),
+                _ => {}
+            }
+            entries.push((path, hash));
+        }
+        report.complete = report.interruption.is_none() && report.documents_checked == total;
+        if report.complete {
+            let generation = index_generation(
+                header.upstream_revision.as_deref(),
+                entries.iter().map(|(p, h)| (p.as_str(), h.as_str())),
+            )?;
+            if generation != header.generation {
+                report.failures += 1;
+                if report.findings.len() < 100 {
+                    report.findings.push((
+                        String::new(),
+                        Error::new(
+                            "INDEX_SNAPSHOT_MISMATCH",
+                            "snapshot generation does not match its document inventory",
+                            5,
+                        ),
+                    ));
+                }
+            }
+            if let Err(error) = control.check() {
+                report.complete = false;
+                report.interruption = Some(error);
+            }
+        } else if report.interruption.is_none() {
+            report.interruption = Some(Error::new(
+                "SCAN_LIMIT",
+                "index verification scan budget reached",
+                7,
+            ));
+        }
+        Ok(Some(report))
+    }
+
     fn load(&self, key: &str) -> Result<Option<Snapshot>> {
         self.selected(key, None, None, MAX_INDEX_DOCUMENTS)
     }
@@ -186,16 +336,17 @@ impl Index for SqliteIndex {
                 6,
             ));
         }
+        // Replace the inventory inside the publication transaction: unexpected
+        // rows may carry the same generation and must not survive a repair sync.
+        tx.execute("DELETE FROM documents WHERE bundle=?1", [key])
+            .map_err(Error::io)?;
         for doc in &snapshot.documents {
-            tx.execute("INSERT INTO documents(bundle,path,hash,raw,generation) VALUES(?1,?2,?3,?4,?5)
-                ON CONFLICT(bundle,path) DO UPDATE SET raw=excluded.raw,hash=excluded.hash,generation=excluded.generation",
-                params![key,doc.path,doc.hash,doc.raw,snapshot.generation]).map_err(Error::io)?;
+            tx.execute(
+                "INSERT INTO documents(bundle,path,hash,raw,generation) VALUES(?1,?2,?3,?4,?5)",
+                params![key, doc.path, doc.hash, doc.raw, snapshot.generation],
+            )
+            .map_err(Error::io)?;
         }
-        tx.execute(
-            "DELETE FROM documents WHERE bundle=?1 AND generation<>?2",
-            params![key, snapshot.generation],
-        )
-        .map_err(Error::io)?;
         tx.execute("INSERT INTO snapshots(bundle,generation,revision,checked_at) VALUES(?1,?2,?3,?4)
             ON CONFLICT(bundle) DO UPDATE SET generation=excluded.generation,revision=excluded.revision,checked_at=excluded.checked_at",
             params![key,snapshot.generation,snapshot.upstream_revision,snapshot.checked_at]).map_err(Error::io)?;
