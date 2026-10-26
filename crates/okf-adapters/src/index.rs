@@ -85,13 +85,33 @@ fn header(tx: &Transaction<'_>, key: &str) -> Result<Option<IndexStats>> {
     }))
 }
 
-fn stats(tx: &Transaction<'_>, key: &str) -> Result<Option<IndexStats>> {
+// Binary path bounds avoid treating %, _ or Unicode as SQL patterns.
+fn directory_bounds(directory: Option<&str>) -> Result<(String, Option<String>)> {
+    match directory {
+        Some(directory) => {
+            if directory.is_empty() {
+                return Err(Error::new("INVALID_PATH", "directory must not be empty", 2));
+            }
+            okf_core::logical_path(directory)?;
+            Ok((format!("{directory}/"), Some(format!("{directory}0"))))
+        }
+        None => Ok((String::new(), None)),
+    }
+}
+
+fn stats(tx: &Transaction<'_>, key: &str, directory: Option<&str>) -> Result<Option<IndexStats>> {
     let Some(header) = header(tx, key)? else {
         return Ok(None);
     };
+    let (lower, upper) = directory_bounds(directory)?;
+    let upper_bound = if upper.is_some() {
+        "path<?3"
+    } else {
+        "?3 IS NULL"
+    };
     let (bytes, documents, concepts): (usize, usize, usize) = tx.query_row(
-        &format!("SELECT COALESCE(SUM(length(CAST(raw AS BLOB))),0),COUNT(*),COALESCE(SUM(CASE WHEN {CONCEPT} THEN 1 ELSE 0 END),0) FROM documents WHERE bundle=?1"),
-        [key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+        &format!("SELECT COALESCE(SUM(length(CAST(raw AS BLOB))),0),COUNT(*),COALESCE(SUM(CASE WHEN {CONCEPT} THEN 1 ELSE 0 END),0) FROM documents WHERE bundle=?1 AND path>=?2 AND {upper_bound}"),
+        params![key, lower, upper], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
     ).map_err(Error::io)?;
     if bytes > MAX_INDEX_BYTES || documents > MAX_INDEX_DOCUMENTS {
         return Err(Error::new(
@@ -115,12 +135,13 @@ impl SqliteIndex {
         path: Option<&str>,
         expected: Option<&str>,
         limit: usize,
+        directory: Option<&str>,
     ) -> Result<Option<Snapshot>> {
         let tx = self.0.unchecked_transaction().map_err(Error::io)?;
         let metadata = if path.is_some() {
             header(&tx, key)?
         } else {
-            stats(&tx, key)?
+            stats(&tx, key, directory)?
         };
         let Some(header) = metadata else {
             return Ok(None);
@@ -149,12 +170,18 @@ impl SqliteIndex {
                 6,
             ));
         }
+        let (lower, upper) = directory_bounds(directory)?;
+        let upper_bound = if upper.is_some() {
+            "path<?5"
+        } else {
+            "?5 IS NULL"
+        };
         let predicate = if expected.is_some() { CONCEPT } else { "1" };
         let mut statement = tx.prepare(&format!(
-            "SELECT path,hash,raw FROM documents WHERE bundle=?1 AND (?2 IS NULL OR path=?2) AND ({predicate}) ORDER BY path LIMIT ?3"
+            "SELECT path,hash,raw FROM documents WHERE bundle=?1 AND (?2 IS NULL OR path=?2) AND ({predicate}) AND path>=?4 AND {upper_bound} ORDER BY path LIMIT ?3"
         )).map_err(Error::io)?;
         let documents = statement
-            .query_map(params![key, path, limit as i64], |r| {
+            .query_map(params![key, path, limit as i64, lower, upper], |r| {
                 Ok(IndexedDocument {
                     path: r.get(0)?,
                     hash: r.get(1)?,
@@ -306,17 +333,36 @@ impl Index for SqliteIndex {
     }
 
     fn load(&self, key: &str) -> Result<Option<Snapshot>> {
-        self.selected(key, None, None, MAX_INDEX_DOCUMENTS)
+        self.selected(key, None, None, MAX_INDEX_DOCUMENTS, None)
     }
     fn stats(&self, key: &str) -> Result<Option<IndexStats>> {
         let tx = self.0.unchecked_transaction().map_err(Error::io)?;
-        stats(&tx, key)
+        stats(&tx, key, None)
     }
     fn read(&self, key: &str, path: &str) -> Result<Option<Snapshot>> {
-        self.selected(key, Some(path), None, 1)
+        self.selected(key, Some(path), None, 1, None)
     }
     fn search(&self, key: &str, generation: &str, limit: usize) -> Result<Option<Snapshot>> {
-        self.selected(key, None, Some(generation), limit.min(MAX_INDEX_DOCUMENTS))
+        self.scoped_search(key, generation, limit, None)
+    }
+    fn scoped_stats(&self, key: &str, directory: Option<&str>) -> Result<Option<IndexStats>> {
+        let tx = self.0.unchecked_transaction().map_err(Error::io)?;
+        stats(&tx, key, directory)
+    }
+    fn scoped_search(
+        &self,
+        key: &str,
+        generation: &str,
+        limit: usize,
+        directory: Option<&str>,
+    ) -> Result<Option<Snapshot>> {
+        self.selected(
+            key,
+            None,
+            Some(generation),
+            limit.min(MAX_INDEX_DOCUMENTS),
+            directory,
+        )
     }
     fn publish(&self, key: &str, expected: Option<&str>, snapshot: &Snapshot) -> Result<()> {
         let tx = Transaction::new_unchecked(&self.0, TransactionBehavior::Immediate)

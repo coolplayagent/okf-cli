@@ -1,9 +1,10 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-/// Exact metadata filters; OR within a field, AND across fields.
+/// Directory selection and exact metadata filters; OR within a field, AND across fields.
 #[derive(Debug, Default)]
 pub struct SearchFilter {
+    pub directory: Option<String>,
     pub types: Vec<String>,
     pub tags: Vec<String>,
     pub statuses: Vec<String>,
@@ -12,6 +13,20 @@ pub struct SearchFilter {
     pub as_of: Option<DateTime<Utc>>,
 }
 impl SearchFilter {
+    pub fn validate(&self) -> okf_core::Result<()> {
+        if let Some(directory) = &self.directory {
+            if directory.is_empty() {
+                return Err(okf_core::Error::new(
+                    "INVALID_PATH",
+                    "omit the directory filter for the bundle root",
+                    2,
+                ));
+            }
+            okf_core::logical_path(directory)?;
+        }
+        Ok(())
+    }
+
     pub fn matches(&self, card: &Value) -> bool {
         (self.types.is_empty()
             || card["type"]

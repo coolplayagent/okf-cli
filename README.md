@@ -86,11 +86,14 @@ okf read @handbook/services/auth --indexed --format json
 okf index status handbook
 okf index verify handbook --max-scan 10000 --format json
 okf search "认证" --bundle handbook --full-text --type Service --tag security
+okf search "认证" --bundle handbook --full-text --dir services --max-scan 10
 okf search "认证" --bundle handbook --full-text --trust human-reviewed --expiry current
 okf neighbors @handbook/services/auth --direction incoming --format json
 ```
 
 全文检索与上下文选择可重复指定 `--bundle` 查询多个知识包，共用请求预算；各结果保留自己的 generation、内容哈希和原文字节范围。离线索引代表上次成功同步的内容。扫描不完整时不会替换旧索引。
+
+`search` 和带查询的 `context` 支持 `--dir PATH`，限定包内目录及其子目录；索引模式先限定目录再分配扫描预算。结果总数与完整性只描述所选范围。
 
 使用 `okf cache reset` 将历史卡片缓存归档后重建；`okf index clear NAME` 清理指定知识包的正文索引。两者均保留知识包与绑定。
 
@@ -136,7 +139,7 @@ python scripts/check_delivery.py target/release/okf
 python scripts/evaluate.py target/release/okf target/verification/retrieval-1000.json --scale 1000
 ```
 
-`check_delivery.py` 校验响应 Schema、索引完整性与同步修复、本地 HTTPS Git 流程与故障、单包与多包检索及有限预算评测、发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
+`check_delivery.py` 校验响应 Schema、目录范围、索引完整性与同步修复、本地 HTTPS Git 流程与故障、检索预算、12 个消费任务回放、固定语料哈希及发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。CI 与打包工作流共用该入口；验收不访问公网。
 
 固定版本的上游语料位于 `fixtures/upstream`。需要单独测量性能基线时执行：
 
@@ -153,6 +156,7 @@ Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含�
 - [产品与架构](docs/architecture.md)：模块边界、数据流和存储职责。
 - [CLI 与 Agent 参考](docs/cli-contract.md)：命令参数、响应结构和消费流程。
 - [OKF 检查矩阵](docs/okf-validation.md)：规范依据、诊断级别和字段定位。
+- [上游兼容检查](docs/upstream-compatibility.md)：固定语料、在线差异报告和基线更新流程。
 - [实现状态](docs/implementation-status.md)：功能范围、行为边界和验证方法。
 - [性能基线](docs/performance.md)：固定上游语料、测量方法与结果边界。
 - [检索任务评测](docs/retrieval-evaluation.md)：预期证据、章节选择、调用量与内存测量。

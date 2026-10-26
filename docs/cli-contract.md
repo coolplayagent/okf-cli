@@ -118,6 +118,10 @@
 
 ## 搜索与生命周期
 
+`search` 和 `context --query` 支持单个 `--dir PATH`，表示各所选知识包内相同的相对目录及其全部子目录。允许一个末尾 `/`，拒绝空值、绝对路径、反斜杠及 `.`、`..` 路径段；查询包根时省略该选项。路径区分大小写，`services` 不包含 `services-old`，`%` 和 `_` 按字面匹配。
+
+实时模式从该目录开始列举，扫描预算仍按目录遍历计数；目录不存在时沿用文件系统读取错误。索引模式按保存路径的范围限定统计和候选，然后分配共享扫描预算，不加载其他目录正文；不存在的范围返回完整的零命中。`data.directory` 和每包 `coverage.scope` 标明目录，`page.total` 与完整性只描述该范围。元数据与正文匹配规则保持一致，未指定目录时行为不变。
+
 `search` 与 `context --query` 支持 `--type`、`--tag`、`--status` 精确匹配；同一选项重复表示 OR，不同字段之间为 AND，大小写敏感。筛选发生在结果截断之前，实时与索引模式采用相同规则。不带查询的概览拒绝这些筛选选项。
 
 `--trust` 接受 `unverified`、`machine-confirmed`、`human-reviewed`；`--expiry` 接受 `current`、`expired`、`unspecified`、`unknown`，同样支持重复取值。未声明有效期与日期无效分别为 `unspecified` 和 `unknown`。默认不按审核层级或有效期排除结果。

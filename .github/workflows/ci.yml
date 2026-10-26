@@ -25,6 +25,7 @@ jobs:
         run: python scripts/check_delivery.py target/release/okf
       - if: runner.os == 'Windows'
         run: python scripts/check_delivery.py target/release/okf.exe
+      - run: python scripts/evaluate_candidates.py target/verification/candidates.json
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -33,6 +34,9 @@ jobs:
             target/verification/retrieval.json
             target/verification/multi-bundle.json
             target/verification/budgets.json
+            target/verification/consumption.json
+            target/verification/candidates.json
+            target/verification/upstream-local.json
             target/verification/https/
           if-no-files-found: ignore
   lint:

@@ -47,7 +47,7 @@ python scripts/check_delivery.py target/release/okf --tag vVERSION
 
 ## 三平台打包实测
 
-2026-10-26 对已合并提交 `ab4f735` 手动执行 [Package binaries](https://github.com/coolplayagent/okf-cli/actions/runs/40263932075)，三平台构建、交付验收与产物上传全部通过。下载后再次核对了三个压缩包及包内文件哈希，manifest 均记录同一提交和干净源码。这是工作流产物验收，未创建 tag、Release 草稿或正式版本；本轮新增 `index verify` 等未提交修改不在这些远端产物中。
+2026-10-26 对提交 `ab4f735` 手动执行 [Package binaries](https://github.com/coolplayagent/okf-cli/actions/runs/40263932075)，三平台构建、交付验收与产物上传全部通过。下载后再次核对了三个压缩包及包内文件哈希，manifest 均记录同一提交和干净源码。这是历史工作流产物验收，未创建 tag、Release 草稿或正式版本；不包含该提交之后的功能与发行流程变更。最新验证范围见 [实现状态](implementation-status.md#最近验证)。
 
 | 产物目标 | 本次二进制的运行库要求 |
 | --- | --- |
@@ -55,6 +55,20 @@ python scripts/check_delivery.py target/release/okf --tag vVERSION
 | `x86_64-pc-windows-msvc` | 依赖 `VCRUNTIME140.dll`、UCRT 与 Windows 系统 DLL；无需 Rust 或 Python |
 | `aarch64-apple-darwin` | Mach-O deployment target 为 macOS 11.0，依赖系统 Foundation/CoreFoundation、libSystem、libobjc 和 libiconv |
 
-这些信息来自下载的二进制依赖记录。CI 运行成功只验证对应 runner 环境，deployment target 不等于已在最低系统版本实测。当前跟随 `*-latest` 构建，后续产物的运行库要求可能变化；正式发行前应固定构建环境和支持矩阵。Linux 更旧的 glibc 环境需重新构建兼容包。
+这些信息来自历史下载包的依赖记录，不代表下述新构建基线。CI 运行成功只验证对应 runner 环境，deployment target 不等于已在最低系统版本实测。
 
-`python scripts/check_upgrade.py BEFORE AFTER` 在隔离目录中安装旧二进制、绑定并同步知识包、替换为新二进制后离线读取同一 generation，再回退并复核绑定与原文。CLI 子进程 PATH 不包含编译工具；Python 仅驱动验收。本轮已用上述 Windows MSVC 包与本地新增功能的 GNU 构建完成该流程。这验证的是指定二进制对和当前数据库格式，不承诺任意版本间可回退。
+`python scripts/check_upgrade.py BEFORE AFTER` 在隔离目录中安装旧二进制、绑定并同步知识包、替换为新二进制后离线读取同一 generation，再回退并复核绑定与原文。CLI 子进程 PATH 不包含编译工具；Python 仅驱动验收。该流程验证指定二进制对和数据库格式，不承诺任意版本间可回退。
+
+## 固定发行基线
+
+打包工作流固定 Rust 1.99.1，并使用以下平台标签。标签来自 [GitHub runner 镜像清单](https://github.com/actions/runner-images#available-images)；平台补丁镜像仍会更新，因此这不构成逐字节可重现构建。
+
+| Rust target | 构建及验收环境 | 自动依赖检查 |
+| --- | --- | --- |
+| `x86_64-unknown-linux-gnu` | Ubuntu 22.04 | `readelf` 检查 glibc 符号版本不高于 2.35，并记录动态库 |
+| `x86_64-pc-windows-msvc` | Windows Server 2022 | 读取 PE 导入表，记录 VC/UCRT 与系统 DLL |
+| `aarch64-apple-darwin` | macOS 15 ARM64 | 设置 deployment target 14.0，使用 `otool` 检查并记录系统库 |
+
+`python scripts/check_runtime.py BINARY OUTPUT.json` 输出实际二进制的构建信息、检查宿主和依赖。Windows GNU 开发构建也可检查，但标记为非发行目标。Windows 桌面最低版本、缺少 VC 运行库的机器以及 macOS 14 的实际运行尚未验证，报告保留 `minimum_os_verified: false`。
+
+工作流另行构建固定基线 `cae1cff309941735326fcdb79b953c640150ae23`，在各平台执行升级、离线读取和回退。运行库报告随验收产物上传。新平台矩阵及跨平台升级流程待本轮远端运行确认；版本 tag 和草稿仍需依照发布流程单独验收。
