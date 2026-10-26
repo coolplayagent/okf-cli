@@ -15,6 +15,8 @@ Use the installed `okf` executable and request `--format json`. This skill only 
 
 Use `bundle` for knowledge-package registration and `--bundle` for selection. OKF `sources` frontmatter describes a concept's provenance; the response envelope uses `bundles` and `bundle_id` for knowledge-package read observations.
 
+After browsing the bundle map, use `--dir PATH` on search or queried context to restrict the request to a bundle-relative directory and its descendants. Totals and complete coverage then describe that directory only; zero matches do not establish absence elsewhere in the bundle.
+
 Bindings can reference local directories or pinned Git commits. Git bindings keep their commit until an explicit `bundle refresh NAME`; preserve `upstream_revision` when citing them. Check command help for supported options. Default `context --query` returns metadata candidates and read entry points; fetch their bodies before using the knowledge.
 
 For synchronized indexes, use `search "terms" --bundle NAME --full-text` for body snippets or `context --query "terms" --bundle NAME --content` for larger original excerpts. Repeat `--bundle` to query several bundles with one shared result, byte, scan and time budget. Scan shares are distributed by bundle name; increasing the number of bundles does not increase the budget. Multi-bundle responses provide `data.generations`; use each item's own `generation` for `read @NAME/path --indexed --generation GENERATION`. A missing or failed index leaves other bundles usable but makes coverage incomplete; inspect `coverage_gaps.unavailable_bundles` and per-bundle observations. Identical or conflicting text retains its separate sources.

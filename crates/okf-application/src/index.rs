@@ -59,6 +59,32 @@ pub trait Index {
     fn read(&self, key: &str, path: &str) -> Result<Option<Snapshot>>;
     /// Read at most `limit` concepts from the expected generation, ordered by path.
     fn search(&self, key: &str, generation: &str, limit: usize) -> Result<Option<Snapshot>>;
+    fn scoped_stats(&self, key: &str, directory: Option<&str>) -> Result<Option<IndexStats>> {
+        if directory.is_some() {
+            return Err(Error::new(
+                "UNSUPPORTED_CAPABILITY",
+                "index directory selection is unavailable",
+                2,
+            ));
+        }
+        self.stats(key)
+    }
+    fn scoped_search(
+        &self,
+        key: &str,
+        generation: &str,
+        limit: usize,
+        directory: Option<&str>,
+    ) -> Result<Option<Snapshot>> {
+        if directory.is_some() {
+            return Err(Error::new(
+                "UNSUPPORTED_CAPABILITY",
+                "index directory selection is unavailable",
+                2,
+            ));
+        }
+        self.search(key, generation, limit)
+    }
     /// Inspect a bounded inventory in one snapshot, retaining findings and progress on interruption.
     fn verify(
         &self,
@@ -325,6 +351,7 @@ impl App<'_> {
         filter: &crate::SearchFilter,
     ) -> Result<Response> {
         let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+        filter.validate()?;
         if terms.is_empty() {
             return Err(Error::new("EMPTY_QUERY", "query must not be empty", 2));
         }
@@ -353,7 +380,9 @@ impl App<'_> {
             let result = self
                 .control
                 .check()
-                .and_then(|()| index.stats(&binding.index_key()))
+                .and_then(|()| {
+                    index.scoped_stats(&binding.index_key(), filter.directory.as_deref())
+                })
                 .and_then(|stats| {
                     stats.ok_or_else(|| {
                         Error::new("INDEX_MISSING", "run sync for this bundle first", 3)
@@ -364,7 +393,7 @@ impl App<'_> {
                 Err(error) if single => return Err(error),
                 Err(error) => {
                     response.issue(&error, &format!("@{}", binding.name));
-                    response.unavailable(&binding, "");
+                    response.unavailable(&binding, filter.directory.as_deref().unwrap_or(""));
                     complete = false;
                 }
             }
@@ -392,7 +421,14 @@ impl App<'_> {
             let result = self
                 .control
                 .check()
-                .and_then(|()| index.search(&binding.index_key(), &stats.generation, quota))
+                .and_then(|()| {
+                    index.scoped_search(
+                        &binding.index_key(),
+                        &stats.generation,
+                        quota,
+                        filter.directory.as_deref(),
+                    )
+                })
                 .and_then(|snapshot| {
                     snapshot.ok_or_else(|| {
                         Error::new("INDEX_MISSING", "run sync for this bundle first", 3)
@@ -403,7 +439,7 @@ impl App<'_> {
                 Err(error) if single => return Err(error),
                 Err(error) => {
                     response.issue(&error, &format!("@{name}"));
-                    response.unavailable(&binding, "");
+                    response.unavailable(&binding, filter.directory.as_deref().unwrap_or(""));
                     complete = false;
                     continue;
                 }
@@ -500,6 +536,7 @@ impl App<'_> {
             complete &= bundle_complete;
             indexed_observation(&mut response, &binding, &snapshot, bundle_complete);
             let observation = response.bundles.last_mut().unwrap();
+            observation["coverage"]["scope"] = json!(filter.directory.as_deref().unwrap_or(""));
             observation["indexed_documents_scanned"] = json!(scanned - bundle_start);
             observation["scan_limit"] = json!(quota);
         }
@@ -533,6 +570,9 @@ impl App<'_> {
         response.data["items"] = json!(items);
         response.data["coverage_gaps"] = json!({"unselected_matches":total-response.data["items"].as_array().unwrap().len(),"live_files_checked":false});
         response.budget = json!({"content_bytes_limit":options.budget,"content_bytes_used":used,"scan_limit":options.max_scan,"indexed_documents_scanned":scanned});
+        if let Some(directory) = &filter.directory {
+            response.data["directory"] = json!(directory);
+        }
         if !single {
             response.data["coverage_gaps"]["unavailable_bundles"] = json!(response
                 .bundles

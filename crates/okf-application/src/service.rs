@@ -447,6 +447,8 @@ impl App<'_> {
         options: &ReadOptions,
         filter: &crate::SearchFilter,
     ) -> Result<Response> {
+        filter.validate()?;
+        let directory = filter.directory.as_deref().unwrap_or("");
         if query.trim().is_empty() {
             return Err(Error::new("EMPTY_QUERY", "query must not be empty", 2));
         }
@@ -464,11 +466,14 @@ impl App<'_> {
             "search",
             json!({"query": query, "mode": "metadata", "items": [], "evaluated_at": evaluated_at.to_rfc3339()}),
         );
+        if filter.directory.is_some() {
+            response.data["directory"] = json!(directory);
+        }
         let mut matches = vec![];
         let mut scan = ScanBudget::new(options.max_scan, self.control);
         let mut match_count = 0;
         for binding in &bindings {
-            let mut queue = VecDeque::from([String::new()]);
+            let mut queue = VecDeque::from([directory.to_owned()]);
             let mut seen = BTreeSet::new();
             let mut complete = true;
             let mut observed = false;
@@ -560,11 +565,11 @@ impl App<'_> {
                 response.observe(
                     binding,
                     self.now,
-                    "",
+                    directory,
                     if complete { "complete" } else { "partial" },
                 );
             } else {
-                response.unavailable(binding, "");
+                response.unavailable(binding, directory);
             }
         }
         matches.sort_by(|a, b| a["ref"].as_str().cmp(&b["ref"].as_str()));

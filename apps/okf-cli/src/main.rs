@@ -69,7 +69,7 @@ enum Command {
         bundles: Vec<String>,
         #[arg(long)]
         query: Option<String>,
-        /// Select original body excerpts from a synchronized index (one --bundle).
+        /// Select original body excerpts from synchronized indexes (requires --bundle).
         #[arg(long, requires = "query", requires = "bundles")]
         content: bool,
         #[command(flatten)]
@@ -237,6 +237,9 @@ enum IndexCommand {
 
 #[derive(Args, Default)]
 struct FilterArgs {
+    /// Search this bundle-relative directory and its descendants.
+    #[arg(long = "dir", value_parser = parse_directory)]
+    directory: Option<String>,
     /// Exact type match; repeat for alternatives.
     #[arg(long = "type")]
     types: Vec<String>,
@@ -259,6 +262,7 @@ struct FilterArgs {
 impl FilterArgs {
     fn value(&self) -> okf_application::SearchFilter {
         okf_application::SearchFilter {
+            directory: self.directory.clone(),
             types: self.types.clone(),
             tags: self.tags.clone(),
             statuses: self.statuses.clone(),
@@ -268,7 +272,8 @@ impl FilterArgs {
         }
     }
     fn is_empty(&self) -> bool {
-        self.types.is_empty()
+        self.directory.is_none()
+            && self.types.is_empty()
             && self.tags.is_empty()
             && self.statuses.is_empty()
             && self.trusts.is_empty()
@@ -281,6 +286,15 @@ fn parse_as_of(value: &str) -> std::result::Result<chrono::DateTime<chrono::Utc>
     chrono::DateTime::parse_from_rfc3339(value)
         .map(|time| time.with_timezone(&chrono::Utc))
         .map_err(|_| "expected an RFC 3339 timestamp with an explicit UTC offset".into())
+}
+
+fn parse_directory(value: &str) -> std::result::Result<String, String> {
+    let directory = value.strip_suffix('/').unwrap_or(value);
+    if directory.is_empty() {
+        return Err("expected a bundle-relative directory; omit --dir for the root".into());
+    }
+    okf_core::logical_path(directory).map_err(|error| error.to_string())?;
+    Ok(directory.to_owned())
 }
 
 #[derive(Args)]
