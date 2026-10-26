@@ -66,7 +66,20 @@ python scripts/evaluate_candidates.py target/verification/candidates.json --scal
 
 对比在新进程中打开持久数据库，报告包含进程启动的查询耗时、构建耗时、数据库体积、正文检查数与倒排条目读取数。倒排读取有独立上限，达到上限时保守报告不完整；路径扫描额外读取一条路径记录来判断覆盖是否完整，相同正文预算不代表相同总工作量。查询拒绝空白词和负数预算，允许零预算，并由 `check_support.py` 验证这些边界。
 
-该原型尚未覆盖生产卡片派生、索引迁移与损坏修复，因此不作为生产搜索引擎，也不据此宣称整体性能提升。
+该脚本保留为独立算法实验；实际 CLI 的候选实现及完整性、兼容和修复行为由下述生产对照验证。
+
+## 生产候选检索对照
+
+```sh
+python scripts/evaluate_index_candidates.py target/release/okf target/verification/index-candidates.json
+python scripts/evaluate_index_candidates.py target/release/okf target/verification/index-candidates-1000.json --scale 1000
+```
+
+脚本使用实际 CLI 比较路径扫描与 `--candidate-budget`，默认生成 100 份干扰文档及一份末尾证据。两种正文模式各 16 个查询，核对完整条目、总数、原文哈希及字节范围，包含元数据与正文混合、多词 Unicode、短长词组合以及部分词无命中；另测目录、类型、标签、审核与有效期筛选、共享多包预算、零预算、派生数据损坏、同 generation 修复和旧索引读取。报告同步耗时、数据库体积、倒排条目数以及两种策略的正文扫描、候选行读取和查询耗时。
+
+默认验收集加入交付入口，规模结果用于测量，不设置机器相关的耗时门槛。候选维护增加同步、数据库存储与清单检查成本，正文与候选预算必须一并报告。
+
+2026-10-26 Windows 本地实测，1000 份干扰文档加一份末尾证据时，两种正文模式的 `late-evidence` 查询均从路径扫描的 1001 份正文降至 1 份正文及 12 条候选记录，完整结果一致。该语料同步约 16.9 秒，数据库约 30.3 MiB，包含 159192 条倒排记录。这些数字记录包含派生索引的实际成本，不代表同等总工作量下的加速，也不能外推到其他语料。
 
 ## CLI 消费任务回放
 
@@ -76,4 +89,4 @@ python scripts/evaluate_consumption.py target/release/okf target/verification/co
 
 12 个固定任务覆盖发现目录后读取、元数据候选后读取、正文证据、冲突来源、过期与审核筛选、离线片段、目录预算、部分零命中、完整零命中、缺失索引隔离以及旧 generation 拒绝。每项保存命令参数、退出码、完整响应、引用、调用数与披露量，便于复现。所有返回证据核对原文哈希与片段字节。
 
-该协议不调用模型：`answer_correctness` 与 `unsupported_claim_rate` 明确为 null。任务通过只表示 CLI 证据与覆盖条件满足；自然语言答案质量需要后续固定模型、提示和执行协议的独立测量。
+该协议不调用模型：`answer_correctness` 与 `unsupported_claim_rate` 明确为 null。任务通过只表示 CLI 证据与覆盖条件满足；自然语言答案质量的任务准备、运行约束和评分方法见 [Agent 消费评测协议](agent-evaluation.md)。

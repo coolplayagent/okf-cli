@@ -237,6 +237,9 @@ enum IndexCommand {
 
 #[derive(Args, Default)]
 struct FilterArgs {
+    /// Opt in to indexed candidates with a shared row budget (0..1000000).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000000))]
+    candidate_budget: Option<u32>,
     /// Search this bundle-relative directory and its descendants.
     #[arg(long = "dir", value_parser = parse_directory)]
     directory: Option<String>,
@@ -262,6 +265,7 @@ struct FilterArgs {
 impl FilterArgs {
     fn value(&self) -> okf_application::SearchFilter {
         okf_application::SearchFilter {
+            candidate_budget: self.candidate_budget.map(|v| v as usize),
             directory: self.directory.clone(),
             types: self.types.clone(),
             tags: self.tags.clone(),
@@ -273,6 +277,7 @@ impl FilterArgs {
     }
     fn is_empty(&self) -> bool {
         self.directory.is_none()
+            && self.candidate_budget.is_none()
             && self.types.is_empty()
             && self.tags.is_empty()
             && self.statuses.is_empty()

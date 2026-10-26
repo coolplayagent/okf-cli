@@ -56,6 +56,7 @@
       "type": "object",
       "properties": {
         "directory": {"type": "string", "minLength": 1},
+        "retrieval_strategy": {"const": "candidates-v1"},
         "evaluated_at": {
           "type": "string",
           "format": "date-time"
@@ -244,7 +245,15 @@
       }
     },
     "budget": {
-      "type": "object"
+      "type": "object",
+      "properties": {
+        "candidate_rows_limit": {"type": "integer", "minimum": 0, "maximum": 1000000},
+        "candidate_rows_read": {"type": "integer", "minimum": 0, "maximum": 1000000}
+      },
+      "dependentRequired": {
+        "candidate_rows_limit": ["candidate_rows_read"],
+        "candidate_rows_read": ["candidate_rows_limit"]
+      }
     },
     "diagnostics": {
       "type": "array",

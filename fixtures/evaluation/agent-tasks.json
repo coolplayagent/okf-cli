@@ -1,0 +1,14 @@
+{
+  "protocol": "agent-cli-v1",
+  "as_of": "2030-01-01T00:00:00Z",
+  "arms": ["browse-read", "metadata-read", "indexed-context", "candidate-context"],
+  "limits": {"cli_calls": 12, "disclosed_bytes": 65536, "elapsed_seconds": 120, "max_scan_per_call": 1000, "candidate_rows_per_call": 10000},
+  "tasks": [
+    {"id": "checkout-requirements", "corpus": "single", "prompt": "Checkout 请求的认证和重试分别有什么要求？请给出两个方面的证据。", "required_claims": ["请求必须携带有效 token", "重试必须复用 idempotency_key"], "expected_refs": ["@book/auth", "@book/orders"], "expected_decision": "answer"},
+    {"id": "recovery-section", "corpus": "single", "prompt": "队列耗尽时应该采取什么操作？请引用原文，不要把相邻章节内容当作恢复步骤。", "required_claims": ["restart_worker resolves queue exhaustion"], "expected_refs": ["@book/headings"], "expected_decision": "answer"},
+    {"id": "conflicting-retry-policy", "corpus": "multi", "prompt": "handbook 与 operations 当前的重试上限分别是多少？是否一致？", "required_claims": ["handbook 最多三次", "operations 最多五次", "两个来源存在冲突，不能合并成统一上限"], "expected_refs": ["@handbook/retry", "@operations/retry"], "expected_decision": "conflict"},
+    {"id": "reviewed-current-policy", "corpus": "multi", "prompt": "截至 2030-01-01，经过人工审核且未过期的重试建议是什么？", "required_claims": ["handbook 的三次上限满足人工审核和未过期条件", "legacy 的无限重试建议已过期"], "expected_refs": ["@handbook/retry", "@legacy/retry"], "expected_decision": "answer"},
+    {"id": "duplicate-provenance", "corpus": "multi", "prompt": "handbook 和 operations 对认证恢复分别有什么说明？即使内容相同也保留各自来源。", "required_claims": ["认证恢复需要 rotation", "两个知识包提供相同说明但来源独立"], "expected_refs": ["@handbook/shared", "@operations/shared"], "expected_decision": "answer"},
+    {"id": "missing-index-coverage", "corpus": "multi", "arms": ["indexed-context", "candidate-context"], "prompt": "请在所有已注册知识包的离线索引中查找 nonexistent-evidence。能否据此断言所有知识包均不存在相关信息？", "required_claims": ["已检索范围没有命中", "unsynced 缺失索引，不能对全部知识包作无证据结论"], "expected_refs": [], "expected_decision": "inconclusive"}
+  ]
+}

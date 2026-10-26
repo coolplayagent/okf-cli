@@ -69,6 +69,7 @@ jobs:
             target/verification/multi-bundle.json
             target/verification/budgets.json
             target/verification/consumption.json
+            target/verification/index-candidates.json
             target/verification/upstream-local.json
             target/verification/runtime.json
             target/verification/https/

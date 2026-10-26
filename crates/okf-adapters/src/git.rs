@@ -19,6 +19,15 @@ use std::{
 
 pub struct Git;
 
+/// Release the writer lock even if a concurrent child inherited the file handle.
+pub struct GitCacheLock(std::fs::File);
+
+impl Drop for GitCacheLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
 fn command(root: &Path) -> Command {
     let mut cmd = Command::new(std::env::var_os("OKF_GIT").unwrap_or_else(|| "git".into()));
     #[cfg(unix)]
@@ -538,7 +547,7 @@ impl Git {
     }
 
     /// Serialize writes to an already initialized, tool-managed bare repository.
-    pub fn lock(root: &Path) -> Result<std::fs::File> {
+    pub fn lock(root: &Path) -> Result<GitCacheLock> {
         let guard = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -549,7 +558,7 @@ impl Git {
         guard
             .try_lock()
             .map_err(|_| Error::new("GIT_CACHE_LOCKED", "another cache writer is active", 5))?;
-        Ok(guard)
+        Ok(GitCacheLock(guard))
     }
 
     /// Repack without expiring refs or unreachable objects; all pinned commits survive.
@@ -750,6 +759,20 @@ impl BundleReader for Readers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_guard_releases_lock_with_a_duplicate_handle_alive() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = Git::lock(root.path()).unwrap();
+        let duplicate = guard.0.try_clone().unwrap();
+        assert!(Git::lock(root.path()).is_err());
+        drop(guard);
+        let next = Git::lock(root.path()).unwrap();
+        drop(duplicate);
+        assert!(Git::lock(root.path()).is_err());
+        drop(next);
+        assert!(Git::lock(root.path()).is_ok());
+    }
 
     #[test]
     fn transport_status_codes_must_not_match_repository_paths() {

@@ -71,4 +71,6 @@ python scripts/check_delivery.py target/release/okf --tag vVERSION
 
 `python scripts/check_runtime.py BINARY OUTPUT.json` 输出实际二进制的构建信息、检查宿主和依赖。Windows GNU 开发构建也可检查，但标记为非发行目标。Windows 桌面最低版本、缺少 VC 运行库的机器以及 macOS 14 的实际运行尚未验证，报告保留 `minimum_os_verified: false`。
 
-工作流另行构建固定基线 `cae1cff309941735326fcdb79b953c640150ae23`，在各平台执行升级、离线读取和回退。运行库报告随验收产物上传。新平台矩阵及跨平台升级流程待本轮远端运行确认；版本 tag 和草稿仍需依照发布流程单独验收。
+工作流另行构建固定基线 `cae1cff309941735326fcdb79b953c640150ae23`，在各平台执行升级、离线读取和回退。运行库报告随验收产物上传。2026-10-26 对合并提交 `c064e39` 执行的 [打包运行 40292399047](https://github.com/coolplayagent/okf-cli/actions/runs/40292399047) 已在上述三个环境完成全部检查；三个下载包及清单哈希再次通过，Windows 包另经独立运行和 65 份语料、184 次 CLI 调用复核。
+
+该次 Linux 包最高 glibc 符号依赖为 2.34，macOS deployment target 为 14.0，Windows 包记录 VC/UCRT 与系统 DLL。实际运行证据对应表中的 runner 系统，仍不证明最低操作系统可用。该产物不包含后续生产候选检索改动；版本 tag 和草稿仍需依照发布流程单独验收。

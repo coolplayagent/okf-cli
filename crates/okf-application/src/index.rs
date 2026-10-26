@@ -52,6 +52,17 @@ pub fn index_generation<'a>(
 }
 
 pub trait Index {
+    fn candidates(
+        &self,
+        _key: &str,
+        _request: &crate::CandidateRequest<'_>,
+    ) -> Result<Option<crate::CandidateSelection>> {
+        Err(Error::new(
+            "UNSUPPORTED_CAPABILITY",
+            "candidate retrieval is unavailable",
+            2,
+        ))
+    }
     fn load(&self, key: &str) -> Result<Option<Snapshot>>;
     /// Metadata and counts only; does not load or verify document bodies.
     fn stats(&self, key: &str) -> Result<Option<IndexStats>>;
@@ -94,6 +105,16 @@ pub trait Index {
     ) -> Result<Option<IndexVerification>>;
     /// Compare-and-swap publication. Incomplete scans must never call this method.
     fn publish(&self, key: &str, expected: Option<&str>, snapshot: &Snapshot) -> Result<()>;
+    fn publish_controlled(
+        &self,
+        key: &str,
+        expected: Option<&str>,
+        snapshot: &Snapshot,
+        control: &crate::RequestControl,
+    ) -> Result<()> {
+        control.check()?;
+        self.publish(key, expected, snapshot)
+    }
     fn clear(&self, key: &str) -> Result<()>;
 }
 impl BundleBinding {
@@ -214,10 +235,11 @@ impl App<'_> {
                 documents,
             };
             self.control.check()?;
-            index.publish(
+            index.publish_controlled(
                 &key,
                 previous.as_ref().map(|s| s.generation.as_str()),
                 &snapshot,
+                self.control,
             )?;
             response.data["published"] = json!(true);
             response.data["generation"] = json!(snapshot.generation);
@@ -416,12 +438,42 @@ impl App<'_> {
         }
         let mut candidates = vec![];
         let mut scanned = 0;
-        for ((binding, stats), quota) in available.into_iter().zip(quotas) {
+        let bundle_count = available.len();
+        let mut candidate_rows = 0;
+        for (position, ((binding, stats), quota)) in available.into_iter().zip(quotas).enumerate() {
             let name = &binding.name;
+            let row_quota = filter
+                .candidate_budget
+                .map(|n| n / bundle_count + usize::from(position < n % bundle_count));
+            let mut candidate_complete = None;
+            let mut bundle_candidate_rows = 0;
             let result = self
                 .control
                 .check()
                 .and_then(|()| {
+                    if let Some(row_limit) = row_quota {
+                        return index
+                            .candidates(
+                                &binding.index_key(),
+                                &crate::CandidateRequest {
+                                    generation: &stats.generation,
+                                    terms: &terms,
+                                    filter,
+                                    evaluated_at,
+                                    body_limit: quota,
+                                    row_limit,
+                                    control: self.control,
+                                },
+                            )
+                            .map(|selection| {
+                                selection.map(|selection| {
+                                    candidate_complete = Some(selection.complete);
+                                    bundle_candidate_rows = selection.rows_read;
+                                    candidate_rows += selection.rows_read;
+                                    selection.snapshot
+                                })
+                            });
+                    }
                     index.scoped_search(
                         &binding.index_key(),
                         &stats.generation,
@@ -449,12 +501,16 @@ impl App<'_> {
             } else {
                 response.data["generations"][name] = json!(snapshot.generation);
             }
-            let mut bundle_complete = quota >= stats.concepts;
+            let mut bundle_complete = candidate_complete.unwrap_or(quota >= stats.concepts);
             if !bundle_complete {
                 response.issue(
                     &Error::new(
-                        "SCAN_LIMIT",
-                        "indexed document evaluation budget reached",
+                        if candidate_complete.is_some() {
+                            "CANDIDATE_LIMIT"
+                        } else {
+                            "SCAN_LIMIT"
+                        },
+                        "indexed query coverage is incomplete; increase scan or candidate budget",
                         7,
                     ),
                     &format!("@{name}"),
@@ -539,6 +595,10 @@ impl App<'_> {
             observation["coverage"]["scope"] = json!(filter.directory.as_deref().unwrap_or(""));
             observation["indexed_documents_scanned"] = json!(scanned - bundle_start);
             observation["scan_limit"] = json!(quota);
+            if let Some(row_quota) = row_quota {
+                observation["candidate_rows_read"] = json!(bundle_candidate_rows);
+                observation["candidate_row_limit"] = json!(row_quota);
+            }
         }
 
         candidates.sort_by(|a, b| {
@@ -570,6 +630,11 @@ impl App<'_> {
         response.data["items"] = json!(items);
         response.data["coverage_gaps"] = json!({"unselected_matches":total-response.data["items"].as_array().unwrap().len(),"live_files_checked":false});
         response.budget = json!({"content_bytes_limit":options.budget,"content_bytes_used":used,"scan_limit":options.max_scan,"indexed_documents_scanned":scanned});
+        if let Some(limit) = filter.candidate_budget {
+            response.data["retrieval_strategy"] = json!("candidates-v1");
+            response.budget["candidate_rows_limit"] = json!(limit);
+            response.budget["candidate_rows_read"] = json!(candidate_rows);
+        }
         if let Some(directory) = &filter.directory {
             response.data["directory"] = json!(directory);
         }

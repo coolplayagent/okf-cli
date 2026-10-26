@@ -7,6 +7,8 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBe
 use std::{path::Path, time::Duration};
 
 pub struct SqliteIndex(Connection);
+#[path = "candidate_index.rs"]
+mod candidates;
 impl SqliteIndex {
     pub fn open_read_only(path: &Path) -> Result<Self> {
         if !path.try_exists().map_err(Error::io)? {
@@ -57,6 +59,9 @@ impl SqliteIndex {
             CREATE TABLE IF NOT EXISTS snapshots (bundle TEXT PRIMARY KEY, generation TEXT NOT NULL, revision TEXT, checked_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS documents (bundle TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, raw TEXT NOT NULL, generation TEXT NOT NULL, PRIMARY KEY(bundle,path));
             PRAGMA user_version=1;").map_err(Error::io)?;
+        connection
+            .execute_batch(candidates::SCHEMA)
+            .map_err(Error::io)?;
         Ok(Self(connection))
     }
 }
@@ -210,6 +215,13 @@ impl SqliteIndex {
     }
 }
 impl Index for SqliteIndex {
+    fn candidates(
+        &self,
+        key: &str,
+        request: &okf_application::CandidateRequest<'_>,
+    ) -> Result<Option<okf_application::CandidateSelection>> {
+        candidates::select(self, key, request)
+    }
     fn verify(
         &self,
         key: &str,
@@ -239,6 +251,14 @@ impl Index for SqliteIndex {
             interruption: None,
         };
         let mut entries = vec![];
+        let check_candidates = match candidates::header_valid(&tx, key, &header.generation) {
+            Ok(present) => present,
+            Err(error) => {
+                report.failures += 1;
+                report.findings.push((String::new(), error));
+                false
+            }
+        };
         let mut statement = tx
             .prepare(
                 "SELECT path,hash,generation,length(CAST(raw AS BLOB)),
@@ -295,6 +315,11 @@ impl Index for SqliteIndex {
                     "stored content hash mismatch; run sync to rebuild",
                 ),
                 None => finding("INDEX_DOCUMENT_LIMIT", "stored document exceeds 2 MiB"),
+                Some(raw) if check_candidates => {
+                    if let Err(error) = candidates::verify_document(&tx, key, &path, &raw, &hash) {
+                        finding("INDEX_CANDIDATES_CORRUPT", &error.message);
+                    }
+                }
                 _ => {}
             }
             entries.push((path, hash));
@@ -365,6 +390,20 @@ impl Index for SqliteIndex {
         )
     }
     fn publish(&self, key: &str, expected: Option<&str>, snapshot: &Snapshot) -> Result<()> {
+        let control = RequestControl::new(
+            Duration::from_secs(30),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        );
+        self.publish_controlled(key, expected, snapshot, &control)
+    }
+    fn publish_controlled(
+        &self,
+        key: &str,
+        expected: Option<&str>,
+        snapshot: &Snapshot,
+        control: &RequestControl,
+    ) -> Result<()> {
+        control.check()?;
         let tx = Transaction::new_unchecked(&self.0, TransactionBehavior::Immediate)
             .map_err(Error::io)?;
         let current: Option<String> = tx
@@ -387,6 +426,7 @@ impl Index for SqliteIndex {
         tx.execute("DELETE FROM documents WHERE bundle=?1", [key])
             .map_err(Error::io)?;
         for doc in &snapshot.documents {
+            control.check()?;
             tx.execute(
                 "INSERT INTO documents(bundle,path,hash,raw,generation) VALUES(?1,?2,?3,?4,?5)",
                 params![key, doc.path, doc.hash, doc.raw, snapshot.generation],
@@ -396,10 +436,13 @@ impl Index for SqliteIndex {
         tx.execute("INSERT INTO snapshots(bundle,generation,revision,checked_at) VALUES(?1,?2,?3,?4)
             ON CONFLICT(bundle) DO UPDATE SET generation=excluded.generation,revision=excluded.revision,checked_at=excluded.checked_at",
             params![key,snapshot.generation,snapshot.upstream_revision,snapshot.checked_at]).map_err(Error::io)?;
+        candidates::publish(&tx, key, snapshot, control)?;
+        control.check()?;
         tx.commit().map_err(Error::io)
     }
     fn clear(&self, key: &str) -> Result<()> {
         let tx = self.0.unchecked_transaction().map_err(Error::io)?;
+        candidates::clear(&tx, key)?;
         tx.execute("DELETE FROM documents WHERE bundle=?1", [key])
             .map_err(Error::io)?;
         tx.execute("DELETE FROM snapshots WHERE bundle=?1", [key])

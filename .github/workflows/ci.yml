@@ -36,6 +36,7 @@ jobs:
             target/verification/budgets.json
             target/verification/consumption.json
             target/verification/candidates.json
+            target/verification/index-candidates.json
             target/verification/upstream-local.json
             target/verification/https/
           if-no-files-found: ignore

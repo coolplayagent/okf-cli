@@ -57,6 +57,10 @@ with tempfile.TemporaryDirectory(prefix='okf-index-verify-') as temporary:
             connection.execute(mutation)
             connection.commit()
         damaged = dump()
+        if diagnostic == 'INDEX_CORRUPT' and "raw=" in mutation:
+            partial = run('index', 'verify', 'book', '--max-scan', '1', code=7)
+            assert partial['data']['valid'] is False and not partial['data']['complete']
+            assert any(d['code'] == 'INDEX_CANDIDATES_CORRUPT' for d in partial['diagnostics'])
         result = run('index', 'verify', 'book', code=5)
         assert result['status'] == 'error' and result['data']['valid'] is False
         assert result['data']['complete']
@@ -72,6 +76,8 @@ with tempfile.TemporaryDirectory(prefix='okf-index-verify-') as temporary:
     digest = hashlib.sha256(raw.encode()).hexdigest()
     with closing(sqlite3.connect(database)) as connection:
         key = connection.execute('SELECT bundle FROM snapshots').fetchone()[0]
+        # Keep this case focused on legacy body-only verification and its byte cap.
+        connection.execute('DELETE FROM candidate_snapshots')
         connection.execute('DELETE FROM documents')
         connection.executemany('INSERT INTO documents VALUES (?,?,?,?,?)',
                                ((key, f'{i:03}.md', digest, raw, generation) for i in range(33)))
