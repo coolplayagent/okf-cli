@@ -32,6 +32,10 @@ with tempfile.TemporaryDirectory(prefix='okf-schema-') as temporary:
         (7, ['sync', 'book', '--max-scan', '1']),
         (2, ['read', '@book/note', '--limit', '2']),
         (2, ['bundle', 'cache', 'book', '--compact']),
+        (0, ['build-info']),
+        (0, ['search', 'note', '--bundle', 'book', '--trust', 'unverified', '--expiry', 'unspecified', '--as-of', '2030-01-01T00:00:00Z']),
+        (0, ['validate', 'book', '--max-warnings', '0']),
+        (7, ['validate', 'book', '--max-warnings', '0', '--max-scan', '1']),
     ]
     for code, args in cases:
         result = subprocess.run([str(binary), '--format', 'json', *args], env=env,
@@ -39,4 +43,11 @@ with tempfile.TemporaryDirectory(prefix='okf-schema-') as temporary:
         assert result.returncode == code, (args, result.stdout, result.stderr)
         assert not result.stderr, result.stderr
         validator.validate(json.loads(result.stdout))
-print(f'Schema validated against {len(cases)} command responses')
+    (bundle / 'note.md').write_text('---\ntype: Note\ntitle: 123\n---\nHello\n', encoding='utf-8')
+    result = subprocess.run([str(binary), '--format', 'json', 'validate', 'book', '--max-warnings', '0'],
+                            env=env, cwd=workspace, capture_output=True, timeout=60)
+    assert result.returncode == 1 and not result.stderr
+    response = json.loads(result.stdout)
+    validator.validate(response)
+    assert response['data']['quality_gate']['passed'] is False
+print(f'Schema validated against {len(cases) + 1} command responses')

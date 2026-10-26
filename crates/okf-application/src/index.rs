@@ -218,10 +218,11 @@ impl App<'_> {
         }
         let (binding, snapshot) = self.snapshot(name, index)?;
         let mut candidates = vec![];
+        let evaluated_at = filter.as_of.unwrap_or(self.now);
         let mut complete = true;
         let mut response = Response::new(
             if context { "context" } else { "search" },
-            json!({"query":query,"mode":"full_text","items":[],"generation":snapshot.generation,
+            json!({"query":query,"mode":"full_text","items":[],"generation":snapshot.generation,"evaluated_at":evaluated_at.to_rfc3339(),
             "disclosure":if context {"selected_excerpts"} else {"indexed_snippets"}}),
         );
         let mut scanned = 0;
@@ -242,7 +243,7 @@ impl App<'_> {
             scanned += 1;
             let doc = Document::parse(&document.raw)?;
             let id = document.path.strip_suffix(".md").unwrap_or(&document.path);
-            let card = doc.card(id, self.now);
+            let card = doc.card(id, evaluated_at);
             if !filter.matches(&serde_json::to_value(&card).map_err(Error::io)?) {
                 continue;
             }

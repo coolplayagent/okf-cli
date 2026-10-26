@@ -15,7 +15,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.x'
+          python-version: '3.13'
       - run: python -m pip install -r scripts/requirements-test.txt
       - run: cargo test --workspace --all-targets --locked
       - run: cargo test --workspace --all-targets --release --locked
@@ -29,7 +29,9 @@ jobs:
         if: always()
         with:
           name: retrieval-${{ runner.os }}-${{ runner.arch }}
-          path: target/verification/retrieval.json
+          path: |
+            target/verification/retrieval.json
+            target/verification/multi-bundle.json
           if-no-files-found: ignore
   lint:
     runs-on: ubuntu-latest

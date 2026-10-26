@@ -120,6 +120,15 @@ impl App<'_> {
     }
 
     fn card(&self, binding: &BundleBinding, path: &str) -> Result<CardObservation> {
+        self.card_at(binding, path, self.now)
+    }
+
+    fn card_at(
+        &self,
+        binding: &BundleBinding,
+        path: &str,
+        evaluated_at: DateTime<Utc>,
+    ) -> Result<CardObservation> {
         self.control.check()?;
         let raw = self
             .reader
@@ -130,7 +139,7 @@ impl App<'_> {
         let card = doc.card(id, self.now);
         let hash = sha256(raw.as_bytes());
         let cache_error = self.remember_card(binding, path, &hash, &card)?;
-        let mut value = serde_json::to_value(card).map_err(Error::io)?;
+        let mut value = serde_json::to_value(doc.card(id, evaluated_at)).map_err(Error::io)?;
         value["kind"] = json!("concept");
         value["ref"] = json!(format!("@{}/{}", binding.name, id));
         value["bundle_id"] = json!(binding.id);
@@ -450,9 +459,10 @@ impl App<'_> {
         }
         let bindings = self.selected_bindings(selected)?;
         let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
+        let evaluated_at = filter.as_of.unwrap_or(self.now);
         let mut response = Response::new(
             "search",
-            json!({"query": query, "mode": "metadata", "items": []}),
+            json!({"query": query, "mode": "metadata", "items": [], "evaluated_at": evaluated_at.to_rfc3339()}),
         );
         let mut matches = vec![];
         let mut scan = ScanBudget::new(options.max_scan, self.control);
@@ -493,7 +503,7 @@ impl App<'_> {
                             queue.push_back(entry.path);
                         }
                     } else if !reserved(&entry.path) {
-                        let card = match self.card(binding, &entry.path) {
+                        let card = match self.card_at(binding, &entry.path, evaluated_at) {
                             Ok(CardObservation {
                                 value: card,
                                 diagnostics,

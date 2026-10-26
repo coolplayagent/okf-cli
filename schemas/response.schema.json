@@ -35,6 +35,27 @@
     "data": {
       "type": "object",
       "properties": {
+        "evaluated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "quality_gate": {
+          "type": "object",
+          "required": ["max_warnings", "warnings_observed", "warnings_total", "complete", "passed"],
+          "properties": {
+            "max_warnings": {"type": "integer", "minimum": 0},
+            "warnings_observed": {"type": "integer", "minimum": 0},
+            "warnings_total": {"type": ["integer", "null"], "minimum": 0},
+            "complete": {"type": "boolean"},
+            "passed": {"type": ["boolean", "null"]}
+          },
+          "allOf": [
+            {"if": {"properties": {"complete": {"const": true}}},
+             "then": {"properties": {"warnings_total": {"type": "integer"}, "passed": {"type": "boolean"}}},
+             "else": {"properties": {"warnings_total": {"type": "null"}, "passed": {"enum": [false, null]}}}}
+          ],
+          "additionalProperties": false
+        },
         "generation": {
           "type": "string"
         },

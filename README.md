@@ -21,6 +21,8 @@ cargo build --release --locked -p okf-cli
 
 产物位于 `target/release/okf`，Windows 下为 `target/release/okf.exe`。
 
+发行包的下载、校验、安装和升级步骤见 [发行说明](docs/releases.md)。`okf build-info --format json` 可离线查看程序版本、Rust 目标平台和构建来源。
+
 ### Windows 工具链
 
 Windows 可选择 MSVC 或 GNU 工具链。使用 MSVC 时，需要安装 C++ Build Tools 和 Windows SDK。
@@ -57,6 +59,8 @@ okf validate handbook --format json
 okf status handbook --format json
 ```
 
+查询可用 `--as-of 2030-01-01T00:00:00Z` 固定有效期评估时间；`okf validate handbook --max-warnings 0` 可启用质量门槛。参数和不完整结果的处理见 [CLI 参考](docs/cli-contract.md)。
+
 ### Git 知识包
 
 绑定 Git 仓库的指定提交视图，分支更新后显式刷新：
@@ -81,6 +85,7 @@ okf context --query "认证" --bundle handbook --content --format json
 okf read @handbook/services/auth --indexed --format json
 okf index status handbook
 okf search "认证" --bundle handbook --full-text --type Service --tag security
+okf search "认证" --bundle handbook --full-text --trust human-reviewed --expiry current
 okf neighbors @handbook/services/auth --direction incoming --format json
 ```
 
@@ -128,7 +133,7 @@ python scripts/check_delivery.py target/release/okf
 python scripts/evaluate.py target/release/okf target/verification/retrieval-1000.json --scale 1000
 ```
 
-`check_delivery.py` 校验响应 Schema、本地 HTTPS Git 流程与故障、检索任务，并生成发行包、核对哈希，在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
+`check_delivery.py` 校验响应 Schema、本地 HTTPS Git 流程与故障、单包及跨包逐包检索基线、发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
 
 固定版本的上游语料位于 `fixtures/upstream`。需要单独测量性能基线时执行：
 
@@ -136,7 +141,7 @@ python scripts/evaluate.py target/release/okf target/verification/retrieval-1000
 cargo run --release --locked -p okf-adapters --example baseline -- fixtures/upstream
 ```
 
-Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含校验和，位于 `target/dist`；工作流仅生成构建产物。
+Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含校验和，位于 `target/dist`；tag 验收和草稿发布流程见 [发行说明](docs/releases.md#本地发行验收)。
 
 上游语料验收在临时目录中检查实时与离线读取、Unicode 分页、索引版本失效和缓存损坏恢复，原始语料保持不变。最近验证结果见 [实现状态](docs/implementation-status.md#最近验证)。
 
@@ -149,6 +154,8 @@ Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含�
 - [性能基线](docs/performance.md)：固定上游语料、测量方法与结果边界。
 - [检索任务评测](docs/retrieval-evaluation.md)：预期证据、章节选择、调用量与内存测量。
 - [实施计划](docs/roadmap.md)：剩余工作与验收目标。
+- [发行说明](docs/releases.md)：安装、升级、版本校验和草稿发布流程。
+- [变更记录](CHANGELOG.md)：未发布变更与已合并基础能力。
 
 ## 许可证
 

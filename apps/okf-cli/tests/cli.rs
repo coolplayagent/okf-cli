@@ -71,6 +71,153 @@ fn value(output: &Output) -> Value {
 }
 
 #[test]
+fn lifecycle_filters_use_request_time_in_live_and_offline_queries() {
+    let f = Fixture::new();
+    f.bind();
+    for (name, fields) in [
+        ("human", "verified: {by: 'human:alice', at: '2000-01-01T00:00:00Z'}\nstale_after: '2030-01-01T00:00:00Z'\n"),
+        ("machine", "verified: {by: 'process:ci', at: '2000-01-01T00:00:00Z'}\nstale_after: '2030-01-01T00:00:00Z'\n"),
+        ("unknown", "stale_after: invalid\n"),
+        ("unspecified", ""),
+    ] {
+        fs::write(f.work.path().join(format!("knowledge/{name}.md")),
+            format!("---\ntype: Note\ntitle: policy\n{fields}---\npolicy evidence\n")).unwrap();
+    }
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+    for base in [
+        vec!["search", "policy"],
+        vec!["search", "policy", "--full-text"],
+        vec!["context", "--query", "policy"],
+        vec!["context", "--query", "policy", "--content"],
+    ] {
+        let mut args = base.clone();
+        args.extend([
+            "--bundle",
+            "book",
+            "--as-of",
+            "2029-12-31T19:00:00-05:00",
+            "--trust",
+            "human-reviewed",
+            "--expiry",
+            "expired",
+        ]);
+        let output = f.run(&args);
+        assert_eq!(output.status.code(), Some(0));
+        let response = value(&output);
+        assert_eq!(
+            response["data"]["evaluated_at"],
+            "2030-01-01T00:00:00+00:00"
+        );
+        assert_eq!(response["page"]["returned"], 1);
+        assert_eq!(response["data"]["items"][0]["id"], "human");
+        assert_ne!(
+            response["bundles"][0]["checked_at"],
+            response["data"]["evaluated_at"]
+        );
+        let mut args = base;
+        args.extend([
+            "--bundle",
+            "book",
+            "--trust",
+            "unverified",
+            "--expiry",
+            "unknown",
+            "--expiry",
+            "unspecified",
+        ]);
+        assert_eq!(value(&f.run(&args))["page"]["returned"], 2);
+    }
+    fs::rename(
+        f.work.path().join("knowledge"),
+        f.work.path().join("offline"),
+    )
+    .unwrap();
+    let query = |time| {
+        value(&f.run(&[
+            "search",
+            "policy",
+            "--full-text",
+            "--bundle",
+            "book",
+            "--trust",
+            "machine-confirmed",
+            "--expiry",
+            "current",
+            "--as-of",
+            time,
+        ]))
+    };
+    let before = query("2029-12-31T23:59:59Z");
+    let after = query("2030-01-01T00:00:00Z");
+    assert_eq!(before["page"]["returned"], 1);
+    assert_eq!(after["page"]["returned"], 0);
+    assert_eq!(before["data"]["generation"], after["data"]["generation"]);
+    for args in [
+        vec!["search", "policy", "--as-of", "2030-01-01"],
+        vec!["context", "--as-of", "2030-01-01T00:00:00Z"],
+        vec!["search", "policy", "--trust", "trusted"],
+    ] {
+        assert_eq!(f.run(&args).status.code(), Some(2));
+    }
+}
+
+#[test]
+fn warning_gate_distinguishes_complete_counts_from_truncation_and_scan_limits() {
+    let f = Fixture::new();
+    f.bind();
+    let path = f.work.path().join("knowledge/warnings.md");
+    fs::write(&path, "---\ntype: Note\ndescription: 123\n---\n").unwrap();
+    assert_eq!(f.run(&["validate", "book"]).status.code(), Some(0));
+    let rejected = f.run(&["validate", "book", "--max-warnings", "0"]);
+    assert_eq!(rejected.status.code(), Some(1));
+    let gate = &value(&rejected)["data"]["quality_gate"];
+    assert_eq!(gate["passed"], false);
+    assert_eq!(gate["warnings_total"], 1);
+    assert_eq!(gate["complete"], true);
+    assert_eq!(
+        f.run(&["validate", "book", "--max-warnings", "1"])
+            .status
+            .code(),
+        Some(0)
+    );
+    let limited = f.run(&["validate", "book", "--max-warnings", "0", "--max-scan", "1"]);
+    assert_eq!(limited.status.code(), Some(7));
+    assert!(value(&limited)["data"]["quality_gate"]["passed"].is_null());
+    fs::write(
+        &path,
+        format!(
+            "---\ntype: Note\ntags: [{}]\n---\n",
+            vec!["123"; 100].join(",")
+        ),
+    )
+    .unwrap();
+    for (limit, expected) in [("64", Value::Null), ("0", Value::Bool(false))] {
+        let result = f.run(&["validate", "book", "--max-warnings", limit]);
+        assert_eq!(result.status.code(), Some(7));
+        let gate = &value(&result)["data"]["quality_gate"];
+        assert_eq!(gate["warnings_observed"], 64);
+        assert!(gate["warnings_total"].is_null());
+        assert_eq!(gate["passed"], expected);
+    }
+    fs::write(&path, "not a concept\n").unwrap();
+    let invalid = f.run(&["validate", "book", "--max-warnings", "0"]);
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(value(&invalid)["data"]["quality_gate"]["passed"].is_null());
+}
+
+#[test]
+fn build_info_does_not_open_runtime_state() {
+    let f = Fixture::new();
+    let absent = f.work.path().join("absent");
+    let output = f.run(&["--home", absent.to_str().unwrap(), "build-info"]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(!absent.exists());
+    let info = &value(&output)["data"];
+    assert_eq!(info["version"], env!("CARGO_PKG_VERSION"));
+    assert!(info["target"].as_str().unwrap().contains('-'));
+}
+
+#[test]
 fn local_progressive_read_and_subdirectory_resolution() {
     let f = Fixture::new();
     f.bind();
