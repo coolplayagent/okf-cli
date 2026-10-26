@@ -448,6 +448,13 @@ impl App<'_> {
         filter: &crate::SearchFilter,
     ) -> Result<Response> {
         filter.validate()?;
+        if filter.candidate_budget.is_some() {
+            return Err(Error::new(
+                "INVALID_ARGUMENT",
+                "--candidate-budget requires an indexed query",
+                2,
+            ));
+        }
         let directory = filter.directory.as_deref().unwrap_or("");
         if query.trim().is_empty() {
             return Err(Error::new("EMPTY_QUERY", "query must not be empty", 2));

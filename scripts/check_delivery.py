@@ -15,6 +15,7 @@ subprocess.run([sys.executable, str(root / 'scripts/check_support.py')], check=T
 subprocess.run([sys.executable, str(root / 'scripts/check_schema.py'), str(binary)], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_index.py'), str(binary)], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_scope.py'), str(binary)], check=True)
+subprocess.run([sys.executable, str(root / 'scripts/evaluate_index_candidates.py'), str(binary), str(root / 'target/verification/index-candidates.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_upstream.py'), str(root / 'target/verification/upstream-local.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_package.py'), str(binary)], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/check_git_https.py'), str(binary)], check=True)
@@ -22,6 +23,7 @@ subprocess.run([sys.executable, str(root / 'scripts/evaluate.py'), str(binary), 
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_multi_bundle.py'), str(binary), str(root / 'target/verification/multi-bundle.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_budgets.py'), str(binary), str(root / 'target/verification/budgets.json')], check=True)
 subprocess.run([sys.executable, str(root / 'scripts/evaluate_consumption.py'), str(binary), str(root / 'target/verification/consumption.json')], check=True)
+subprocess.run([sys.executable, str(root / 'scripts/check_agent_preparation.py'), str(binary)], check=True)
 package_args = ['--tag', args.tag] if args.tag else []
 archive = subprocess.check_output([sys.executable, str(root / 'scripts/package.py'), str(binary), *package_args], text=True).strip()
 subprocess.run([sys.executable, str(root / 'scripts/verify_package.py'), archive], check=True)

@@ -193,7 +193,11 @@ fn selective_reads_preserve_versions_and_do_not_load_unrelated_bodies() {
         .is_empty());
     assert_eq!(index.stats("book").unwrap().unwrap().documents, 5);
     index
-        .publish("book", Some("first"), &snapshot("second", "new"))
+        .publish(
+            "book",
+            Some("first"),
+            &snapshot("second", "---\ntype: Note\n---\nnew"),
+        )
         .unwrap();
     assert_eq!(
         index.search("book", "first", 1).unwrap_err().code,
@@ -239,12 +243,12 @@ fn verification_caps_findings_and_rejects_oversized_bodies() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("content.sqlite");
     let index = SqliteIndex::open(&path).unwrap();
-    let mut data = snapshot("v1", "small");
+    let mut data = snapshot("v1", "---\ntype: Note\n---\nsmall");
     for i in 0..110 {
         data.documents.push(IndexedDocument {
             path: format!("note-{i:03}.md"),
             hash: "wrong".into(),
-            raw: "small".into(),
+            raw: "---\ntype: Note\n---\nsmall".into(),
         });
     }
     index.publish("book", None, &data).unwrap();
@@ -260,6 +264,9 @@ fn verification_caps_findings_and_rejects_oversized_bodies() {
     .unwrap();
     let report = index.verify("book", 1, &control()).unwrap().unwrap();
     assert!(!report.complete);
-    assert_eq!(report.findings[0].1.code, "INDEX_DOCUMENT_LIMIT");
+    assert!(report
+        .findings
+        .iter()
+        .any(|(_, e)| e.code == "INDEX_DOCUMENT_LIMIT"));
     assert_eq!(report.documents_checked, 1);
 }

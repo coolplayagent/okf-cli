@@ -1,5 +1,10 @@
 //! Application use cases depend on ports, never on an OS or storage implementation.
+mod candidates;
 mod control;
+pub use candidates::{
+    candidate_data, trigrams, CandidateRequest, CandidateSelection, MAX_DOCUMENT_GRAMS,
+    MAX_POSTINGS,
+};
 mod filter;
 mod index;
 mod neighbors;

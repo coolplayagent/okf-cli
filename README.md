@@ -87,6 +87,7 @@ okf index status handbook
 okf index verify handbook --max-scan 10000 --format json
 okf search "认证" --bundle handbook --full-text --type Service --tag security
 okf search "认证" --bundle handbook --full-text --dir services --max-scan 10
+okf search "认证" --bundle handbook --full-text --candidate-budget 10000 --max-scan 10
 okf search "认证" --bundle handbook --full-text --trust human-reviewed --expiry current
 okf neighbors @handbook/services/auth --direction incoming --format json
 ```
@@ -95,9 +96,11 @@ okf neighbors @handbook/services/auth --direction incoming --format json
 
 `search` 和带查询的 `context` 支持 `--dir PATH`，限定包内目录及其子目录；索引模式先限定目录再分配扫描预算。结果总数与完整性只描述所选范围。
 
+索引查询可用 `--candidate-budget N` 启用持久候选检索，先筛选候选再检查正文；默认仍按路径扫描。旧索引先重新 `sync`，候选行预算与正文扫描预算分别计量，详见 [候选检索](docs/cli-contract.md#候选检索)。
+
 使用 `okf cache reset` 将历史卡片缓存归档后重建；`okf index clear NAME` 清理指定知识包的正文索引。两者均保留知识包与绑定。
 
-`index verify` 只读检查索引路径、哈希、文档版本和快照清单，不访问源文件。检查不完整且尚未发现问题时，`data.valid` 为 null；已发现损坏时为 false。使用 `sync NAME` 从源文件重新发布完整索引以修复损坏，详细语义见 [索引完整性检查](docs/cli-contract.md#索引完整性检查)。
+`index verify` 只读检查索引路径、哈希、文档版本、快照清单及已有的候选派生数据，不访问源文件。检查不完整且尚未发现问题时，`data.valid` 为 null；已发现损坏时为 false。使用 `sync NAME` 从源文件重新发布完整索引以修复损坏，详细语义见 [索引完整性检查](docs/cli-contract.md#索引完整性检查)。
 
 使用 `--format json` 获取机器可读结果。目录和原文分页时，将 `page.next_cursor` 传入同一命令的 `--cursor` 参数继续读取。可通过 `okf <命令> --help` 查看选项，通过 [CLI 参考](docs/cli-contract.md) 了解预算、诊断和覆盖范围。
 
@@ -160,6 +163,7 @@ Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含�
 - [实现状态](docs/implementation-status.md)：功能范围、行为边界和验证方法。
 - [性能基线](docs/performance.md)：固定上游语料、测量方法与结果边界。
 - [检索任务评测](docs/retrieval-evaluation.md)：预期证据、章节选择、调用量与内存测量。
+- [Agent 消费评测](docs/agent-evaluation.md)：隔离任务准备、对照策略与答案质量评分协议。
 - [实施计划](docs/roadmap.md)：剩余工作与验收目标。
 - [发行说明](docs/releases.md)：安装、升级、版本校验和草稿发布流程。
 - [变更记录](CHANGELOG.md)：未发布变更与已合并基础能力。
