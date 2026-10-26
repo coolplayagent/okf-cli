@@ -32,7 +32,7 @@
 | `skill install PATH` | 将内置消费 Skill 写入指定目录 |
 | `help [COMMAND]` / `--help` | 显示文本帮助 |
 
-概览与元数据检索的 `--bundle` 可重复使用，未指定时选择已绑定的全部知识包。全文检索和正文上下文要求恰好一个 `--bundle`。同名项目与用户知识包绑定必须通过 `--scope` 区分。`context` 和 `search` 没有知识包时返回 `NO_BUNDLES`，不会自动扫描当前目录寻找知识包。
+概览与元数据检索的 `--bundle` 可重复使用，未指定时选择已绑定的全部知识包。全文检索和正文上下文要求至少一个 `--bundle`，重复别名只查询一次。同名项目与用户知识包绑定必须通过 `--scope` 区分。`context` 和 `search` 没有知识包时返回 `NO_BUNDLES`，不会自动扫描当前目录寻找知识包。
 
 别名长度为 1–64 个 ASCII 字符，只能包含字母、数字、`-` 和 `_`。存储类型支持 `fs` 与 `git`，其他类型返回 `UNSUPPORTED_CAPABILITY`。
 
@@ -78,9 +78,9 @@
 | `validate` | — | — | 100 | — | 30000 |
 | `sync` | — | — | 100 | — | 30000 |
 
-`--full-text`、`--content` 和 `--indexed` 沿用对应命令的预算与分页参数。全文检索的 `--max-scan` 限制评估的概念数量，`indexed_documents_scanned` 返回实际数量。单包索引总正文上限 64 MiB。`validate --max-resources N` 控制资源声明数量，默认 4096，允许 1–10000；声明字符串另有 2 MiB 总上限。
+`--full-text`、`--content` 和 `--indexed` 沿用对应命令的预算与分页参数。全文检索的 `--max-scan` 限制评估的概念数量，`indexed_documents_scanned` 返回实际数量。单包索引总正文上限 64 MiB、文档数量上限 100000；索引单文件读取上限 2 MiB。`validate --max-resources N` 控制资源声明数量，默认 4096，允许 1–10000；声明字符串另有 2 MiB 总上限。
 
-取值范围：`--limit` 为 1–100，`--budget-bytes` 为 1–65536，`--max-scan` 为 1–10000，`--timeout-ms` 为 1–3600000 毫秒。
+取值范围：`--limit` 为 1–100，`--budget-bytes` 为 1–65536，`--max-scan` 为 1–100000，`--timeout-ms` 为 1–3600000 毫秒。
 
 原文预算计算返回文本的 UTF-8 字节数，条目预算计算序列化条目字节数；完整响应另外受 `--max-output-bytes` 限制。原文按 Unicode 字符边界分页，放不下下一个字符时返回 `BUDGET_TOO_SMALL`。浏览、元数据搜索及候选上下文跳过单张超过整个预算的卡片，附带路径和 `CARD_TOO_LARGE`，继续返回其他条目；浏览的剩余预算放不下下一张正常卡片时分页。概览预算不足时报告 `BUDGET_EXCEEDED`。
 
@@ -131,6 +131,14 @@
 正文片段使用的标题清单每文件最多 4096 项；超过时返回 `SECTION_LIMIT` 和部分结果，片段仍保留精确字节定位，但章节边界可能不完整。
 
 卡片中的 `trust`、`status` 和 `expiry` 从元数据派生，默认值与异常值的处理见 [派生与覆盖](okf-validation.md#派生与覆盖)。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
+
+多包索引查询的 `--limit`、`--budget-bytes`、`--max-scan` 和 `--timeout-ms` 属于整个请求。按包名排序，将扫描配额轮流分配给仍有概念待评估的包；小包用不完的份额在读取前分给其他包。配额小于包数时，后面的包可能分不到扫描份额，并报告 `SCAN_LIMIT`。每包按路径顺序加载配额内的概念，再按统一得分和完整引用排序、应用全局结果及字节限制。配额分配不保证每包都有命中；故障或取消后的剩余份额不重新分配。
+
+单包结果保留 `data.generation`；多包结果使用 `data.generations` 映射别名到版本，条目与 `next` 各自携带 generation。每项还包含 `bundle_id`。重复正文和冲突证据保持独立引用。各包是独立快照，不构成跨包同一时刻的快照。
+
+多包查询中的缺失、损坏或读取期间变化的索引产生带包路径的诊断，保留其他包结果并返回退出码 7。无法读取的包列入 `coverage_gaps.unavailable_bundles`；任何包未完成评估时 `page.total` 为 null。有效包的观测包含 `scan_limit` 和 `indexed_documents_scanned`。单包请求仍直接返回对应错误；未知或有歧义的绑定在查询前拒绝。
+
+`index status` 只查询索引元信息和统计，不验证正文完整性。`read --indexed` 在同一事务中读取版本与目标文档，仅验证该文档哈希；全文查询验证扫描配额内的正文。哈希不匹配返回 `INDEX_CORRUPT`，可重新执行 `sync NAME` 从源文件恢复正文；源内容未变时 generation 保持不变。
 
 ## 故障与覆盖
 

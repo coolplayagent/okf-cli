@@ -8,19 +8,18 @@ import argparse
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
-import time
-import psutil
+from measure import run_measured
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('binary', type=Path)
 parser.add_argument('output', nargs='?', type=Path)
-parser.add_argument('--scale', type=int, default=0, help='Add up to 5000 irrelevant 1-KiB documents')
+parser.add_argument('--scale', type=int, default=0, help='Add up to 10000 irrelevant 1-KiB documents')
+parser.add_argument('--modes', nargs='+', choices=('metadata', 'full_text', 'context'), default=['metadata', 'full_text', 'context'])
 args = parser.parse_args()
-assert 0 <= args.scale <= 5000
+if not 0 <= args.scale <= 10000:
+    parser.error('--scale must be between 0 and 10000')
 binary = args.binary.resolve()
 dataset = json.loads((root / 'fixtures/evaluation/tasks.json').read_text(encoding='utf-8'))
 rows = []
@@ -35,36 +34,28 @@ with tempfile.TemporaryDirectory(prefix='okf-eval-') as temporary:
         (bundle / f'filler-{i:05}.md').write_text('---\ntype: Filler\n---\n' + 'unrelated material ' * 55, encoding='utf-8')
 
     def run(*args):
-        start = time.perf_counter()
-        peak = 0
-        with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-            process = subprocess.Popen([str(binary), '--format', 'json', *args], cwd=workspace,
-                                       env=env, stdout=stdout, stderr=stderr)
-            observed = psutil.Process(process.pid)
-            while process.poll() is None:
-                try:
-                    peak = max(peak, observed.memory_info().rss)
-                except psutil.NoSuchProcess:
-                    pass
-                if time.perf_counter() - start > 60:
-                    process.kill()
-                    process.wait()
-                    raise TimeoutError(args)
-                time.sleep(0.002)
-            stdout.seek(0); stderr.seek(0)
-            data, errors = stdout.read(), stderr.read()
-        assert process.returncode in (0, 7), (args, data, errors)
-        assert not errors
-        return json.loads(data), (time.perf_counter() - start) * 1000, peak
+        result, elapsed, peak = run_measured([str(binary), '--format', 'json', *args], cwd=workspace, env=env)
+        assert result.returncode in (0, 7), (args, result.stdout, result.stderr)
+        assert not result.stderr
+        return json.loads(result.stdout), elapsed, peak
 
     run('bundle', 'add', 'eval', '--path', str(bundle))
-    run('sync', 'eval', '--max-scan', '10000')
+    preparation = {}
+    for operation, command in (
+        ('sync', ['sync', 'eval', '--max-scan', '100000', '--timeout-ms', '120000']),
+        ('index_status', ['index', 'status', 'eval']),
+        ('indexed_read', ['read', '@eval/' + next(iter(dataset['documents'])), '--indexed']),
+    ):
+        response, elapsed, peak = run(*command)
+        assert response['status'] == 'ok', response
+        preparation[operation] = {'elapsed_ms': elapsed, 'sampled_peak_rss_bytes': peak}
+    assert response['data']['document']['text'].encode('utf-8') == next(iter(dataset['documents'].values())).encode('utf-8')
     for task in dataset['tasks']:
-        for mode in ('metadata', 'full_text', 'context'):
+        for mode in dict.fromkeys(args.modes):
             command = ['context', '--query', task['query'], '--content'] if mode == 'context' else ['search', task['query']]
             if mode == 'full_text':
                 command += ['--full-text']
-            response, elapsed, peak = run(*command, '--bundle', 'eval', '--limit', '5', '--budget-bytes', '16384', '--max-scan', '10000')
+            response, elapsed, peak = run(*command, '--bundle', 'eval', '--limit', '5', '--budget-bytes', '16384', '--max-scan', '100000', '--timeout-ms', '120000')
             items = response['data']['items']
             paths = {item['id'] + '.md' for item in items}
             expected = set(task['evidence'])
@@ -102,10 +93,11 @@ def mean(mode, metric):
     return round(sum(values) / len(values), 4)
 report = {'dataset': 'fixtures/evaluation/tasks.json', 'tasks': len(dataset['tasks']),
           'documents': len(dataset['documents']) + args.scale,
+          'preparation': preparation,
           'memory_measurement': 'CLI RSS sampled every 2 ms; brief peaks may be missed; per task maximum across its CLI calls',
           'summary': {mode: {metric: mean(mode, metric)
                             for metric in ('recall_at_5', 'evidence_recall', 'no_answer_correct', 'calls', 'disclosed_bytes', 'elapsed_ms', 'sampled_peak_rss_bytes')}
-                      for mode in ('metadata', 'full_text', 'context')}, 'runs': rows}
+                       for mode in dict.fromkeys(args.modes)}, 'runs': rows}
 output = json.dumps(report, ensure_ascii=False, indent=2) + '\n'
 if args.output:
     destination = args.output

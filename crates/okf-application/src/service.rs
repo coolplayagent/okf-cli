@@ -72,7 +72,7 @@ impl App<'_> {
         find_binding(&self.registry.list()?, name).cloned()
     }
 
-    fn selected_bindings(&self, selected: &[String]) -> Result<Vec<BundleBinding>> {
+    pub(crate) fn selected_bindings(&self, selected: &[String]) -> Result<Vec<BundleBinding>> {
         let bindings = self.registry.list()?;
         if bindings.is_empty() {
             return Err(Error::new(

@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 
 pub const MAX_INDEX_BYTES: usize = 64 * 1024 * 1024;
+pub const MAX_INDEX_DOCUMENTS: usize = 100_000;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexedDocument {
     pub path: String,
@@ -19,8 +20,23 @@ pub struct Snapshot {
     pub checked_at: String,
     pub documents: Vec<IndexedDocument>,
 }
+#[derive(Debug, Clone)]
+pub struct IndexStats {
+    pub generation: String,
+    pub upstream_revision: Option<String>,
+    pub checked_at: String,
+    pub documents: usize,
+    pub concepts: usize,
+    pub bytes: usize,
+}
 pub trait Index {
     fn load(&self, key: &str) -> Result<Option<Snapshot>>;
+    /// Metadata and counts only; does not load or verify document bodies.
+    fn stats(&self, key: &str) -> Result<Option<IndexStats>>;
+    /// Header and requested document are read in one transaction.
+    fn read(&self, key: &str, path: &str) -> Result<Option<Snapshot>>;
+    /// Read at most `limit` concepts from the expected generation, ordered by path.
+    fn search(&self, key: &str, generation: &str, limit: usize) -> Result<Option<Snapshot>>;
     /// Compare-and-swap publication. Incomplete scans must never call this method.
     fn publish(&self, key: &str, expected: Option<&str>, snapshot: &Snapshot) -> Result<()>;
     fn clear(&self, key: &str) -> Result<()>;
@@ -47,7 +63,7 @@ impl App<'_> {
     pub fn sync(&self, name: &str, options: &ReadOptions, index: &dyn Index) -> Result<Response> {
         let binding = self.binding(name)?;
         let key = binding.index_key();
-        let previous = index.load(&key)?;
+        let previous = index.stats(&key)?;
         let mut response = Response::new(
             "sync",
             json!({"published":false,"previous_generation":previous.as_ref().map(|s| &s.generation)}),
@@ -175,11 +191,16 @@ impl App<'_> {
     }
 
     pub fn index_status(&self, name: &str, index: &dyn Index) -> Result<Response> {
-        let (binding, snapshot) = self.snapshot(name, index)?;
+        self.control.check()?;
+        let binding = self.binding(name)?;
+        let snapshot = index
+            .stats(&binding.index_key())?
+            .ok_or_else(|| Error::new("INDEX_MISSING", "run sync for this bundle first", 3))?;
+        self.control.check()?;
         Ok(Response::new(
             "index status",
-            json!({"generation":snapshot.generation,"documents":snapshot.documents.len(),
-            "bytes":snapshot.documents.iter().map(|d| d.raw.len()).sum::<usize>(),"checked_at":snapshot.checked_at,
+            json!({"generation":snapshot.generation,"documents":snapshot.documents,
+            "bytes":snapshot.bytes,"checked_at":snapshot.checked_at,
             "upstream_revision":snapshot.upstream_revision,"matches_binding_revision":snapshot.upstream_revision==binding.git.as_ref().map(|g|g.commit.clone()),
             "view_kind":if binding.git.is_some() {"snapshot"} else {"observed"}}),
         ))
@@ -212,91 +233,205 @@ impl App<'_> {
         context: bool,
         filter: &crate::SearchFilter,
     ) -> Result<Response> {
+        self.indexed_search_bundles_filtered(
+            query,
+            &[name.to_owned()],
+            options,
+            index,
+            context,
+            filter,
+        )
+    }
+
+    pub fn indexed_search_bundles_filtered(
+        &self,
+        query: &str,
+        selected: &[String],
+        options: &ReadOptions,
+        index: &dyn Index,
+        context: bool,
+        filter: &crate::SearchFilter,
+    ) -> Result<Response> {
         let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
         if terms.is_empty() {
             return Err(Error::new("EMPTY_QUERY", "query must not be empty", 2));
         }
-        let (binding, snapshot) = self.snapshot(name, index)?;
-        let mut candidates = vec![];
+        if selected.is_empty() {
+            return Err(Error::new(
+                "INVALID_ARGUMENT",
+                "indexed queries require at least one --bundle",
+                2,
+            ));
+        }
+        let mut bindings = self.selected_bindings(selected)?;
+        bindings.sort_by(|a, b| a.name.cmp(&b.name));
+        let single = bindings.len() == 1;
         let evaluated_at = filter.as_of.unwrap_or(self.now);
-        let mut complete = true;
         let mut response = Response::new(
             if context { "context" } else { "search" },
-            json!({"query":query,"mode":"full_text","items":[],"generation":snapshot.generation,"evaluated_at":evaluated_at.to_rfc3339(),
-            "disclosure":if context {"selected_excerpts"} else {"indexed_snippets"}}),
+            json!({"query":query,"mode":"full_text","items":[],"evaluated_at":evaluated_at.to_rfc3339(),
+                "disclosure":if context {"selected_excerpts"} else {"indexed_snippets"}}),
         );
+        if !single {
+            response.data["generations"] = json!({});
+        }
+        let mut complete = true;
+        let mut available = vec![];
+        for binding in bindings {
+            let result = self
+                .control
+                .check()
+                .and_then(|()| index.stats(&binding.index_key()))
+                .and_then(|stats| {
+                    stats.ok_or_else(|| {
+                        Error::new("INDEX_MISSING", "run sync for this bundle first", 3)
+                    })
+                });
+            match result {
+                Ok(stats) => available.push((binding, stats)),
+                Err(error) if single => return Err(error),
+                Err(error) => {
+                    response.issue(&error, &format!("@{}", binding.name));
+                    response.unavailable(&binding, "");
+                    complete = false;
+                }
+            }
+        }
+        // Round-robin allocation redistributes unused shares from small bundles.
+        let mut quotas = vec![0; available.len()];
+        let mut remaining = options.max_scan;
+        while remaining > 0 {
+            let mut allocated = false;
+            for ((_, stats), quota) in available.iter().zip(&mut quotas) {
+                if remaining > 0 && *quota < stats.concepts {
+                    *quota += 1;
+                    remaining -= 1;
+                    allocated = true;
+                }
+            }
+            if !allocated {
+                break;
+            }
+        }
+        let mut candidates = vec![];
         let mut scanned = 0;
-        for document in &snapshot.documents {
-            if let Err(error) = self.control.check() {
-                complete = false;
-                response.partial(&error.code, &error.message);
-                break;
+        for ((binding, stats), quota) in available.into_iter().zip(quotas) {
+            let name = &binding.name;
+            let result = self
+                .control
+                .check()
+                .and_then(|()| index.search(&binding.index_key(), &stats.generation, quota))
+                .and_then(|snapshot| {
+                    snapshot.ok_or_else(|| {
+                        Error::new("INDEX_MISSING", "run sync for this bundle first", 3)
+                    })
+                });
+            let snapshot = match result {
+                Ok(snapshot) => snapshot,
+                Err(error) if single => return Err(error),
+                Err(error) => {
+                    response.issue(&error, &format!("@{name}"));
+                    response.unavailable(&binding, "");
+                    complete = false;
+                    continue;
+                }
+            };
+            if single {
+                response.data["generation"] = json!(snapshot.generation);
+            } else {
+                response.data["generations"][name] = json!(snapshot.generation);
             }
-            if reserved(&document.path) {
-                continue;
-            }
-            if scanned >= options.max_scan {
-                complete = false;
-                response.partial("SCAN_LIMIT", "indexed document evaluation budget reached");
-                break;
-            }
-            scanned += 1;
-            let doc = Document::parse(&document.raw)?;
-            let id = document.path.strip_suffix(".md").unwrap_or(&document.path);
-            let card = doc.card(id, evaluated_at);
-            if !filter.matches(&serde_json::to_value(&card).map_err(Error::io)?) {
-                continue;
-            }
-            let metadata = serde_json::to_string(&card)
-                .map_err(Error::io)?
-                .to_lowercase();
-            let body = &document.raw[doc.body_start..];
-            let lower = body.to_lowercase();
-            if !terms
-                .iter()
-                .all(|t| metadata.contains(t) || lower.contains(t))
-            {
-                continue;
-            }
-            response.diagnostics.extend(self.document_diagnostics(
-                &binding,
-                &document.path,
-                &document.raw,
-                &doc,
-            ));
-            let score = terms
-                .iter()
-                .map(|t| if metadata.contains(t) { 5 } else { 1 })
-                .sum::<usize>();
-            let (start, end, boundaries_complete) = excerpt(
-                &document.raw,
-                doc.body_start,
-                &terms,
-                if context { 4096 } else { 512 },
-                context,
-            );
-            if !boundaries_complete
-                && !response
-                    .diagnostics
-                    .iter()
-                    .any(|d| d.code == "SECTION_LIMIT")
-            {
-                response.partial(
-                    "SECTION_LIMIT",
-                    "heading inventory truncated; excerpt boundaries may be incomplete",
+            let mut bundle_complete = quota >= stats.concepts;
+            if !bundle_complete {
+                response.issue(
+                    &Error::new(
+                        "SCAN_LIMIT",
+                        "indexed document evaluation budget reached",
+                        7,
+                    ),
+                    &format!("@{name}"),
                 );
             }
-            let mut item = serde_json::to_value(card).map_err(Error::io)?;
-            item["ref"] = json!(format!("@{name}/{id}"));
-            item["content_sha256"] = json!(document.hash);
-            item["upstream_revision"] = json!(snapshot.upstream_revision);
-            item["generation"] = json!(snapshot.generation);
-            item["score"] = json!(score);
-            item["selection_reason"] =
-                json!("all query terms matched; metadata matches rank above body-only matches");
-            item["snippet"] = json!({"path":document.path,"byte_start":start,"byte_end":end,"text":&document.raw[start..end]});
-            candidates.push((score, item));
+            let bundle_start = scanned;
+            for document in &snapshot.documents {
+                if let Err(error) = self.control.check() {
+                    bundle_complete = false;
+                    response.issue(&error, &format!("@{name}"));
+                    break;
+                }
+                scanned += 1;
+                let doc = match Document::parse(&document.raw) {
+                    Ok(doc) => doc,
+                    Err(error) if single => return Err(error),
+                    Err(error) => {
+                        response.issue(&error, &format!("@{name}/{}", document.path));
+                        bundle_complete = false;
+                        continue;
+                    }
+                };
+                let id = document.path.strip_suffix(".md").unwrap_or(&document.path);
+                let card = doc.card(id, evaluated_at);
+                if !filter.matches(&serde_json::to_value(&card).map_err(Error::io)?) {
+                    continue;
+                }
+                let metadata = serde_json::to_string(&card)
+                    .map_err(Error::io)?
+                    .to_lowercase();
+                let body = &document.raw[doc.body_start..];
+                let lower = body.to_lowercase();
+                if !terms
+                    .iter()
+                    .all(|t| metadata.contains(t) || lower.contains(t))
+                {
+                    continue;
+                }
+                response.diagnostics.extend(self.document_diagnostics(
+                    &binding,
+                    &document.path,
+                    &document.raw,
+                    &doc,
+                ));
+                let score = terms
+                    .iter()
+                    .map(|t| if metadata.contains(t) { 5 } else { 1 })
+                    .sum::<usize>();
+                let (start, end, boundaries_complete) = excerpt(
+                    &document.raw,
+                    doc.body_start,
+                    &terms,
+                    if context { 4096 } else { 512 },
+                    context,
+                );
+                if !boundaries_complete
+                    && !response
+                        .diagnostics
+                        .iter()
+                        .any(|d| d.code == "SECTION_LIMIT")
+                {
+                    response.partial(
+                        "SECTION_LIMIT",
+                        "heading inventory truncated; excerpt boundaries may be incomplete",
+                    );
+                }
+                let mut item = serde_json::to_value(card).map_err(Error::io)?;
+                item["bundle_id"] = json!(binding.id);
+                item["ref"] = json!(format!("@{name}/{id}"));
+                item["content_sha256"] = json!(document.hash);
+                item["upstream_revision"] = json!(snapshot.upstream_revision);
+                item["generation"] = json!(snapshot.generation);
+                item["score"] = json!(score);
+                item["selection_reason"] =
+                    json!("all query terms matched; metadata matches rank above body-only matches");
+                item["snippet"] = json!({"path":document.path,"byte_start":start,"byte_end":end,"text":&document.raw[start..end]});
+                candidates.push((score, item));
+            }
+            complete &= bundle_complete;
+            indexed_observation(&mut response, &binding, &snapshot, bundle_complete);
+            let observation = response.bundles.last_mut().unwrap();
+            observation["indexed_documents_scanned"] = json!(scanned - bundle_start);
+            observation["scan_limit"] = json!(quota);
         }
+
         candidates.sort_by(|a, b| {
             b.0.cmp(&a.0)
                 .then_with(|| a.1["ref"].as_str().cmp(&b.1["ref"].as_str()))
@@ -311,7 +446,7 @@ impl App<'_> {
             }
             used += size;
             response.next.push(
-                json!({"operation":"read","target":item["ref"],"indexed":true,"generation":snapshot.generation}),
+                json!({"operation":"read","target":item["ref"],"indexed":true,"generation":item["generation"]}),
             );
             items.push(item);
         }
@@ -326,7 +461,18 @@ impl App<'_> {
         response.data["items"] = json!(items);
         response.data["coverage_gaps"] = json!({"unselected_matches":total-response.data["items"].as_array().unwrap().len(),"live_files_checked":false});
         response.budget = json!({"content_bytes_limit":options.budget,"content_bytes_used":used,"scan_limit":options.max_scan,"indexed_documents_scanned":scanned});
-        indexed_observation(&mut response, &binding, &snapshot, complete);
+        if !single {
+            response.data["coverage_gaps"]["unavailable_bundles"] = json!(response
+                .bundles
+                .iter()
+                .filter(|b| b["freshness"] == "unknown")
+                .map(|b| b["alias"].clone())
+                .collect::<Vec<_>>());
+            response.budget["scope"] = json!("request");
+        }
+        response
+            .bundles
+            .sort_by(|a, b| a["alias"].as_str().cmp(&b["alias"].as_str()));
         Ok(response)
     }
 
@@ -346,7 +492,12 @@ impl App<'_> {
         } else {
             format!("{path}.md")
         };
-        let (binding, snapshot) = self.snapshot(name, index)?;
+        self.control.check()?;
+        let binding = self.binding(name)?;
+        let snapshot = index
+            .read(&binding.index_key(), &path)?
+            .ok_or_else(|| Error::new("INDEX_MISSING", "run sync for this bundle first", 3))?;
+        self.control.check()?;
         let doc = snapshot
             .documents
             .iter()

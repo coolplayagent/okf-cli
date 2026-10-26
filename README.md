@@ -89,7 +89,7 @@ okf search "认证" --bundle handbook --full-text --trust human-reviewed --expir
 okf neighbors @handbook/services/auth --direction incoming --format json
 ```
 
-全文检索与上下文选择当前每次指定一个知识包；结果标注索引 generation、内容哈希和原文字节范围。离线索引代表上次成功同步的内容。扫描不完整时不会替换旧索引。
+全文检索与上下文选择可重复指定 `--bundle` 查询多个知识包，共用请求预算；各结果保留自己的 generation、内容哈希和原文字节范围。离线索引代表上次成功同步的内容。扫描不完整时不会替换旧索引。
 
 使用 `okf cache reset` 将历史卡片缓存归档后重建；`okf index clear NAME` 清理指定知识包的正文索引。两者均保留知识包与绑定。
 
@@ -133,7 +133,7 @@ python scripts/check_delivery.py target/release/okf
 python scripts/evaluate.py target/release/okf target/verification/retrieval-1000.json --scale 1000
 ```
 
-`check_delivery.py` 校验响应 Schema、本地 HTTPS Git 流程与故障、单包及跨包逐包检索基线、发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
+`check_delivery.py` 校验响应 Schema、本地 HTTPS Git 流程与故障、单包检索及逐包/多包查询对比、发行拒绝条件，并在解压后二进制上执行独立运行与上游语料验收。两个 CI 工作流共用该入口；验收不访问公网。
 
 固定版本的上游语料位于 `fixtures/upstream`。需要单独测量性能基线时执行：
 
@@ -143,7 +143,7 @@ cargo run --release --locked -p okf-adapters --example baseline -- fixtures/upst
 
 Windows 将二进制路径改为 `target/release/okf.exe`。打包结果包含校验和，位于 `target/dist`；tag 验收和草稿发布流程见 [发行说明](docs/releases.md#本地发行验收)。
 
-上游语料验收在临时目录中检查实时与离线读取、Unicode 分页、索引版本失效和缓存损坏恢复，原始语料保持不变。最近验证结果见 [实现状态](docs/implementation-status.md#最近验证)。
+上游语料验收在临时目录中检查实时与离线读取、Unicode 分页、索引版本失效、索引正文修复和观测缓存归档恢复，原始语料保持不变。最近验证结果见 [实现状态](docs/implementation-status.md#最近验证)。
 
 ## 文档
 
