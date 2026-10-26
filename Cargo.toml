@@ -3,7 +3,7 @@ members = ["apps/okf-cli", "crates/okf-core", "crates/okf-application", "crates/
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0-alpha.1"
+version = "0.1.0"
 edition = "2021"
 license = "MIT"
 

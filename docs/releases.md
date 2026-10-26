@@ -4,7 +4,7 @@ CLI 源码构建方法见 [README](../README.md#安装与构建)。Python 3.11 �
 
 ## 下载与安装
 
-首个预览版本为 `v0.1.0-alpha.1`，在 GitHub Releases 中标记为 Pre-release。该版本供试用和集成验证，不承诺稳定 API 或跨版本数据库兼容；升级前请备份运行目录。
+当前正式版本为 `v0.1.0`；`v0.1.0-alpha.1` 保留为历史预览版本。正式版沿用预览版的功能，没有数据库格式变更。后续版本仍需按各自迁移说明升级，不承诺任意版本间数据库兼容；升级前请备份运行目录。
 
 发行目标为 Windows x86_64 MSVC、Linux x86_64 GNU 和 macOS ARM64。Linux 要求 glibc 2.35 或更新版本；Windows 需要 VC/UCRT 运行库；macOS deployment target 为 14.0。实际验收环境为 Windows Server 2022、Ubuntu 22.04 和 macOS 15，最低系统版本尚未实机验证。
 
