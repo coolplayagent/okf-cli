@@ -82,7 +82,12 @@ fn stop(child: &mut std::process::Child) {
         unsafe extern "C" {
             fn kill(pid: i32, signal: i32) -> i32;
         }
-        // The child starts a new process group. Terminate its transport helpers too.
+        // Let Git's signal handlers remove lockfiles before forcing the whole
+        // group down. Keep the child unreaped so its process-group ID stays owned.
+        unsafe {
+            kill(-(child.id() as i32), 15);
+        }
+        thread::sleep(Duration::from_millis(500));
         unsafe {
             kill(-(child.id() as i32), 9);
         }
@@ -229,8 +234,8 @@ fn run_bounded(
 
 fn transport_error(stderr: &str) -> Error {
     let text = stderr.to_ascii_lowercase();
-    let (code, message) = if text.contains("401")
-        || text.contains("403")
+    let (code, message) = if text.contains("returned error: 401")
+        || text.contains("returned error: 403")
         || text.contains("authentication failed")
         || text.contains("could not read username")
     {
@@ -247,7 +252,7 @@ fn transport_error(stderr: &str) -> Error {
         ("GIT_TLS_FAILED", "remote TLS verification failed")
     } else if text.contains("couldn't find remote ref")
         || text.contains("not our ref")
-        || text.contains("404")
+        || text.contains("returned error: 404")
         || (text.contains("repository") && text.contains("not found"))
     {
         (
@@ -739,5 +744,61 @@ impl BundleReader for Readers {
     }
     fn read(&self, b: &BundleBinding, p: &str, m: usize, c: &RequestControl) -> Result<String> {
         self.reader(b)?.read(b, p, m, c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn transport_status_codes_must_not_match_repository_paths() {
+        for status in [401, 403, 404] {
+            let error = transport_error(&format!(
+                "Unable to create '/cache/abc{status}def/shallow.lock': File exists"
+            ));
+            assert_eq!(error.code, "GIT_TRANSPORT_FAILED");
+            let error = transport_error(&format!("The requested URL returned error: {status}"));
+            assert_eq!(
+                error.code,
+                if status == 404 {
+                    "GIT_REMOTE_NOT_FOUND"
+                } else {
+                    "GIT_AUTH_FAILED"
+                }
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stop_allows_lock_cleanup_and_forces_unresponsive_children() {
+        use std::os::unix::process::CommandExt;
+        use std::time::Instant;
+        for cooperative in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let script = if cooperative {
+                "trap 'rm -f shallow.lock; exit 0' TERM; touch shallow.lock ready; while :; do :; done"
+            } else {
+                "trap '' TERM; touch shallow.lock ready; while :; do :; done"
+            };
+            let mut child = Command::new("sh")
+                .args(["-c", script])
+                .current_dir(dir.path())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let start = Instant::now();
+            while !dir.path().join("ready").exists() && start.elapsed() < Duration::from_secs(5) {
+                thread::sleep(Duration::from_millis(10));
+            }
+            let ready = dir.path().join("ready").exists();
+            let start = Instant::now();
+            stop(&mut child);
+            assert!(ready);
+            assert!(start.elapsed() < Duration::from_secs(2));
+            assert!(child.try_wait().unwrap().is_some());
+            assert_eq!(dir.path().join("shallow.lock").exists(), !cooperative);
+        }
     }
 }

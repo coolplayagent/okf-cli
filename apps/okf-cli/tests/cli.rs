@@ -71,6 +71,99 @@ fn value(output: &Output) -> Value {
 }
 
 #[test]
+fn multi_bundle_queries_share_budgets_and_isolate_missing_indexes() {
+    let f = Fixture::new();
+    for (name, count) in [("large", 5), ("small", 1), ("unsynced", 0)] {
+        let directory = f.work.path().join(name);
+        fs::create_dir(&directory).unwrap();
+        for i in 0..count {
+            fs::write(
+                directory.join(format!("note{i}.md")),
+                format!("---\ntype: Note\ntitle: needle\n---\n{name} evidence {i}\n"),
+            )
+            .unwrap();
+        }
+        assert_eq!(
+            f.run(&["bundle", "add", name, "--path", name])
+                .status
+                .code(),
+            Some(0)
+        );
+        if name != "unsynced" {
+            assert_eq!(f.run(&["sync", name]).status.code(), Some(0));
+            fs::rename(&directory, f.work.path().join(format!("{name}-offline"))).unwrap();
+        }
+    }
+    for command in [
+        vec!["search", "needle", "--full-text"],
+        vec!["context", "--query", "needle", "--content"],
+    ] {
+        let mut args = command.clone();
+        args.extend(["--bundle", "large", "--bundle", "small", "--max-scan", "2"]);
+        let out = f.run(&args);
+        assert_eq!(out.status.code(), Some(7));
+        let response = value(&out);
+        assert_eq!(response["budget"]["indexed_documents_scanned"], 2);
+        assert_eq!(response["budget"]["scope"], "request");
+        assert_eq!(response["data"]["items"][0]["ref"], "@large/note0");
+        assert_eq!(response["data"]["items"][1]["ref"], "@small/note0");
+        assert!(response["page"]["total"].is_null());
+        assert_eq!(response["bundles"][0]["coverage"]["metadata"], "partial");
+        assert_eq!(response["bundles"][1]["coverage"]["metadata"], "complete");
+        for item in response["data"]["items"].as_array().unwrap() {
+            let read = f.run(&[
+                "read",
+                item["ref"].as_str().unwrap(),
+                "--indexed",
+                "--generation",
+                item["generation"].as_str().unwrap(),
+            ]);
+            assert_eq!(read.status.code(), Some(0));
+            assert_eq!(
+                value(&read)["data"]["document"]["bundle_id"],
+                item["bundle_id"]
+            );
+        }
+        let mut reversed = command.clone();
+        reversed.extend([
+            "--bundle",
+            "small",
+            "--bundle",
+            "large",
+            "--bundle",
+            "large",
+            "--max-scan",
+            "2",
+        ]);
+        assert_eq!(
+            value(&f.run(&reversed))["data"]["items"],
+            response["data"]["items"]
+        );
+        args.extend(["--bundle", "unsynced"]);
+        let partial = value(&f.run(&args));
+        assert_eq!(partial["data"]["items"], response["data"]["items"]);
+        assert_eq!(
+            partial["data"]["coverage_gaps"]["unavailable_bundles"],
+            serde_json::json!(["unsynced"])
+        );
+        let mut full = command.clone();
+        full.extend(["--bundle", "large", "--bundle", "small", "--max-scan", "6"]);
+        let complete = f.run(&full);
+        assert_eq!(complete.status.code(), Some(0));
+        assert_eq!(value(&complete)["page"]["total"], 6);
+        full.extend(["--limit", "1", "--budget-bytes", "1"]);
+        let empty = f.run(&full);
+        assert_eq!(empty.status.code(), Some(7));
+        assert_eq!(value(&empty)["page"]["returned"], 0);
+        assert_eq!(value(&empty)["budget"]["content_bytes_used"], 0);
+        let mut missing = command.clone();
+        missing.extend(["--bundle", "unsynced"]);
+        assert_eq!(f.run(&missing).status.code(), Some(3));
+        assert_eq!(f.run(&command).status.code(), Some(2));
+    }
+}
+
+#[test]
 fn lifecycle_filters_use_request_time_in_live_and_offline_queries() {
     let f = Fixture::new();
     f.bind();

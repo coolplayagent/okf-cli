@@ -59,6 +59,11 @@
         "generation": {
           "type": "string"
         },
+        "generations": {
+          "description": "Per-bundle generations for a multi-bundle indexed query; unavailable bundles are omitted.",
+          "type": "object",
+          "additionalProperties": {"type": "string"}
+        },
         "published": {
           "type": "boolean"
         },

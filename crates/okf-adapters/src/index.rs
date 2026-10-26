@@ -1,4 +1,6 @@
-use okf_application::{Index, IndexedDocument, Snapshot, MAX_INDEX_BYTES};
+use okf_application::{
+    Index, IndexStats, IndexedDocument, Snapshot, MAX_INDEX_BYTES, MAX_INDEX_DOCUMENTS,
+};
 use okf_core::{Error, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use std::{path::Path, time::Duration};
@@ -30,33 +32,101 @@ impl SqliteIndex {
         Ok(Self(connection))
     }
 }
-impl Index for SqliteIndex {
-    fn load(&self, key: &str) -> Result<Option<Snapshot>> {
+// Exact, case-sensitive reserved filenames, matching okf_core::reserved.
+const CONCEPT: &str = "path NOT IN ('index.md','log.md') AND substr(path,-9)<>'/index.md' AND substr(path,-7)<>'/log.md'";
+
+fn header(tx: &Transaction<'_>, key: &str) -> Result<Option<IndexStats>> {
+    let header: Option<(String, Option<String>, String)> = tx
+        .query_row(
+            "SELECT generation,revision,checked_at FROM snapshots WHERE bundle=?1",
+            [key],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(Error::io)?;
+    let Some((generation, upstream_revision, checked_at)) = header else {
+        return Ok(None);
+    };
+    Ok(Some(IndexStats {
+        generation,
+        upstream_revision,
+        checked_at,
+        documents: 0,
+        concepts: 0,
+        bytes: 0,
+    }))
+}
+
+fn stats(tx: &Transaction<'_>, key: &str) -> Result<Option<IndexStats>> {
+    let Some(header) = header(tx, key)? else {
+        return Ok(None);
+    };
+    let (bytes, documents, concepts): (usize, usize, usize) = tx.query_row(
+        &format!("SELECT COALESCE(SUM(length(CAST(raw AS BLOB))),0),COUNT(*),COALESCE(SUM(CASE WHEN {CONCEPT} THEN 1 ELSE 0 END),0) FROM documents WHERE bundle=?1"),
+        [key], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)),
+    ).map_err(Error::io)?;
+    if bytes > MAX_INDEX_BYTES || documents > MAX_INDEX_DOCUMENTS {
+        return Err(Error::new(
+            "INDEX_LIMIT",
+            "stored index exceeds load budget",
+            7,
+        ));
+    }
+    Ok(Some(IndexStats {
+        bytes,
+        documents,
+        concepts,
+        ..header
+    }))
+}
+
+impl SqliteIndex {
+    fn selected(
+        &self,
+        key: &str,
+        path: Option<&str>,
+        expected: Option<&str>,
+        limit: usize,
+    ) -> Result<Option<Snapshot>> {
         let tx = self.0.unchecked_transaction().map_err(Error::io)?;
-        let header: Option<(String, Option<String>, String)> = tx
-            .query_row(
-                "SELECT generation,revision,checked_at FROM snapshots WHERE bundle=?1",
-                [key],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .optional()
-            .map_err(Error::io)?;
-        let Some((generation, upstream_revision, checked_at)) = header else {
+        let metadata = if path.is_some() {
+            header(&tx, key)?
+        } else {
+            stats(&tx, key)?
+        };
+        let Some(header) = metadata else {
             return Ok(None);
         };
-        let (bytes,count):(i64,i64)=tx.query_row("SELECT COALESCE(SUM(length(CAST(raw AS BLOB))),0),COUNT(*) FROM documents WHERE bundle=?1",[key],|r|Ok((r.get(0)?,r.get(1)?))).map_err(Error::io)?;
-        if bytes > MAX_INDEX_BYTES as i64 || count > 10000 {
+        if let Some(path) = path {
+            let bytes: Option<usize> = tx
+                .query_row(
+                    "SELECT length(CAST(raw AS BLOB)) FROM documents WHERE bundle=?1 AND path=?2",
+                    params![key, path],
+                    |r| r.get(0),
+                )
+                .optional()
+                .map_err(Error::io)?;
+            if bytes.is_some_and(|bytes| bytes > 2 * 1024 * 1024) {
+                return Err(Error::new(
+                    "INDEX_LIMIT",
+                    "stored document exceeds read budget",
+                    7,
+                ));
+            }
+        }
+        if expected.is_some_and(|generation| generation != header.generation) {
             return Err(Error::new(
-                "INDEX_LIMIT",
-                "stored index exceeds load budget",
-                7,
+                "INDEX_CHANGED",
+                "index refreshed during query; repeat search",
+                6,
             ));
         }
-        let mut statement = tx
-            .prepare("SELECT path,hash,raw FROM documents WHERE bundle=?1 ORDER BY path")
-            .map_err(Error::io)?;
+        let predicate = if expected.is_some() { CONCEPT } else { "1" };
+        let mut statement = tx.prepare(&format!(
+            "SELECT path,hash,raw FROM documents WHERE bundle=?1 AND (?2 IS NULL OR path=?2) AND ({predicate}) ORDER BY path LIMIT ?3"
+        )).map_err(Error::io)?;
         let documents = statement
-            .query_map([key], |r| {
+            .query_map(params![key, path, limit as i64], |r| {
                 Ok(IndexedDocument {
                     path: r.get(0)?,
                     hash: r.get(1)?,
@@ -77,11 +147,26 @@ impl Index for SqliteIndex {
             }
         }
         Ok(Some(Snapshot {
-            generation,
-            upstream_revision,
-            checked_at,
+            generation: header.generation,
+            upstream_revision: header.upstream_revision,
+            checked_at: header.checked_at,
             documents,
         }))
+    }
+}
+impl Index for SqliteIndex {
+    fn load(&self, key: &str) -> Result<Option<Snapshot>> {
+        self.selected(key, None, None, MAX_INDEX_DOCUMENTS)
+    }
+    fn stats(&self, key: &str) -> Result<Option<IndexStats>> {
+        let tx = self.0.unchecked_transaction().map_err(Error::io)?;
+        stats(&tx, key)
+    }
+    fn read(&self, key: &str, path: &str) -> Result<Option<Snapshot>> {
+        self.selected(key, Some(path), None, 1)
+    }
+    fn search(&self, key: &str, generation: &str, limit: usize) -> Result<Option<Snapshot>> {
+        self.selected(key, None, Some(generation), limit.min(MAX_INDEX_DOCUMENTS))
     }
     fn publish(&self, key: &str, expected: Option<&str>, snapshot: &Snapshot) -> Result<()> {
         let tx = Transaction::new_unchecked(&self.0, TransactionBehavior::Immediate)
@@ -103,7 +188,7 @@ impl Index for SqliteIndex {
         }
         for doc in &snapshot.documents {
             tx.execute("INSERT INTO documents(bundle,path,hash,raw,generation) VALUES(?1,?2,?3,?4,?5)
-                ON CONFLICT(bundle,path) DO UPDATE SET raw=CASE WHEN documents.hash=excluded.hash THEN documents.raw ELSE excluded.raw END,hash=excluded.hash,generation=excluded.generation",
+                ON CONFLICT(bundle,path) DO UPDATE SET raw=excluded.raw,hash=excluded.hash,generation=excluded.generation",
                 params![key,doc.path,doc.hash,doc.raw,snapshot.generation]).map_err(Error::io)?;
         }
         tx.execute(

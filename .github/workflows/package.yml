@@ -51,6 +51,7 @@ jobs:
           path: |
             target/verification/retrieval.json
             target/verification/multi-bundle.json
+            target/verification/https/
           if-no-files-found: ignore
   draft:
     if: github.event_name == 'workflow_dispatch' && inputs.create_draft && github.ref_type == 'tag'

@@ -97,6 +97,120 @@ fn options() -> ReadOptions {
     }
 }
 
+struct MultiRegistry;
+impl BundleRegistry for MultiRegistry {
+    fn list(&self) -> Result<Vec<BundleBinding>> {
+        let template = Registry.list()?.remove(0);
+        Ok(["first", "second", "third"]
+            .into_iter()
+            .map(|name| BundleBinding {
+                id: name.into(),
+                name: name.into(),
+                ..template.clone()
+            })
+            .collect())
+    }
+    fn add(&self, _: &BundleBinding) -> Result<()> {
+        unreachable!()
+    }
+    fn remove(&self, _: &str, _: &str) -> Result<()> {
+        unreachable!()
+    }
+}
+
+struct InterruptingIndex {
+    cancelled: Arc<AtomicBool>,
+    calls: AtomicUsize,
+}
+impl okf_application::Index for InterruptingIndex {
+    fn load(&self, _: &str) -> Result<Option<okf_application::Snapshot>> {
+        panic!("full snapshot load is forbidden")
+    }
+    fn stats(&self, _: &str) -> Result<Option<okf_application::IndexStats>> {
+        Ok(Some(okf_application::IndexStats {
+            generation: "v1".into(),
+            upstream_revision: None,
+            checked_at: "2030-01-01T00:00:00Z".into(),
+            documents: 1,
+            concepts: 1,
+            bytes: 30,
+        }))
+    }
+    fn read(&self, _: &str, _: &str) -> Result<Option<okf_application::Snapshot>> {
+        unreachable!()
+    }
+    fn search(&self, _: &str, _: &str, limit: usize) -> Result<Option<okf_application::Snapshot>> {
+        assert_eq!(limit, 1);
+        if self.calls.fetch_add(1, Ordering::Relaxed) == 1 {
+            self.cancelled.store(true, Ordering::Relaxed);
+            return Err(Error::new(
+                "CANCELLED",
+                "cancelled during second index read",
+                7,
+            ));
+        }
+        let raw = "---\ntype: Note\n---\nexample".to_string();
+        Ok(Some(okf_application::Snapshot {
+            generation: "v1".into(),
+            upstream_revision: None,
+            checked_at: "2030-01-01T00:00:00Z".into(),
+            documents: vec![okf_application::IndexedDocument {
+                path: "note.md".into(),
+                hash: okf_core::sha256(raw.as_bytes()),
+                raw,
+            }],
+        }))
+    }
+    fn publish(&self, _: &str, _: Option<&str>, _: &okf_application::Snapshot) -> Result<()> {
+        unreachable!()
+    }
+    fn clear(&self, _: &str) -> Result<()> {
+        unreachable!()
+    }
+}
+
+#[test]
+fn multi_bundle_cancellation_preserves_finished_evidence_and_stops_index_io() {
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let control = RequestControl::new(Duration::from_secs(30), cancelled.clone());
+    let reader = Reader {
+        cancelled: cancelled.clone(),
+        calls: AtomicUsize::new(0),
+        stop_on_second: false,
+    };
+    let index = InterruptingIndex {
+        cancelled,
+        calls: AtomicUsize::new(0),
+    };
+    let app = App {
+        registry: &MultiRegistry,
+        reader: &reader,
+        cache: &ObservationCache { fail: false },
+        now: Utc::now(),
+        control: &control,
+    };
+    let response = app
+        .indexed_search_bundles_filtered(
+            "example",
+            &["third".into(), "first".into(), "second".into()],
+            &options(),
+            &index,
+            false,
+            &Default::default(),
+        )
+        .unwrap();
+    assert_eq!(response.exit_code, 7);
+    assert_eq!(response.data["items"].as_array().unwrap().len(), 1);
+    assert_eq!(response.data["items"][0]["ref"], "@first/note");
+    assert_eq!(
+        response.data["coverage_gaps"]["unavailable_bundles"],
+        json!(["second", "third"])
+    );
+    assert!(response.page["total"].is_null());
+    assert_eq!(index.calls.load(Ordering::Relaxed), 2);
+    assert_eq!(reader.calls.load(Ordering::Relaxed), 0);
+}
+
 #[test]
 fn cancellation_retains_completed_search_and_browse_cards() {
     for browse in [false, true] {

@@ -36,6 +36,11 @@ with tempfile.TemporaryDirectory(prefix='okf-schema-') as temporary:
         (0, ['search', 'note', '--bundle', 'book', '--trust', 'unverified', '--expiry', 'unspecified', '--as-of', '2030-01-01T00:00:00Z']),
         (0, ['validate', 'book', '--max-warnings', '0']),
         (7, ['validate', 'book', '--max-warnings', '0', '--max-scan', '1']),
+        (0, ['bundle', 'add', 'other', '--path', str(bundle)]),
+        (7, ['search', 'Hello', '--bundle', 'book', '--bundle', 'other', '--full-text']),
+        (0, ['sync', 'other']),
+        (0, ['search', 'Hello', '--bundle', 'book', '--bundle', 'other', '--full-text']),
+        (7, ['context', '--query', 'Hello', '--bundle', 'book', '--bundle', 'other', '--content', '--max-scan', '1']),
     ]
     for code, args in cases:
         result = subprocess.run([str(binary), '--format', 'json', *args], env=env,

@@ -412,7 +412,7 @@ fn parse_budget(value: &str) -> std::result::Result<usize, String> {
     parse_range(value, 1, 65_536)
 }
 fn parse_scan(value: &str) -> std::result::Result<usize, String> {
-    parse_range(value, 1, 10_000)
+    parse_range(value, 1, 100_000)
 }
 
 // Clap can reject the request before Cli exists. Honor a valid output limit
@@ -743,16 +743,9 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             filters,
         } => {
             if *content {
-                if bundles.len() != 1 {
-                    return Err(Error::new(
-                        "INVALID_ARGUMENT",
-                        "--content requires exactly one --bundle",
-                        2,
-                    ));
-                }
-                return app.indexed_search_filtered(
+                return app.indexed_search_bundles_filtered(
                     query.as_deref().unwrap_or(""),
-                    &bundles[0],
+                    bundles,
                     &page.options(),
                     &SqliteIndex::open(&home.join("content.sqlite"))?,
                     true,
@@ -829,16 +822,9 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             filters,
         } => {
             if *full_text {
-                if bundles.len() != 1 {
-                    return Err(Error::new(
-                        "INVALID_ARGUMENT",
-                        "--full-text requires exactly one --bundle",
-                        2,
-                    ));
-                }
-                app.indexed_search_filtered(
+                app.indexed_search_bundles_filtered(
                     query,
-                    &bundles[0],
+                    bundles,
                     &page.options(),
                     &SqliteIndex::open(&home.join("content.sqlite"))?,
                     false,

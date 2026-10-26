@@ -4,10 +4,12 @@ Usage: python scripts/acceptance.py target/release/okf[.exe]
 Uses only the standard library; never modifies the upstream fixtures.
 """
 import hashlib
+from contextlib import closing
 import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -89,9 +91,18 @@ with tempfile.TemporaryDirectory(prefix='okf-acceptance-') as temporary:
     assert not failed['data']['published']
     assert run('index', 'status', 'edge')['data']['generation'] == generation
     assert run('read', '@edge/中文', '--indexed', '--generation', generation)['data']['document']['text'] == raw
-    assert run('sync', 'edge')['data']['generation'] != generation
+    updated_generation = run('sync', 'edge')['data']['generation']
+    assert updated_generation != generation
     stale = run('read', '@edge/中文', '--indexed', '--generation', generation, code=6)
     assert stale['data']['error']['code'] == 'REVISION_CHANGED'
+    with closing(sqlite3.connect(workspace / 'home/content.sqlite')) as connection:
+        connection.execute("UPDATE documents SET raw='corrupted' WHERE path=?", ('中文.md',))
+        connection.commit()
+    corrupt = run('read', '@edge/中文', '--indexed', code=5)
+    assert corrupt['data']['error']['code'] == 'INDEX_CORRUPT'
+    assert run('sync', 'edge')['data']['generation'] == updated_generation
+    repaired = run('read', '@edge/中文', '--indexed', '--generation', updated_generation)
+    assert repaired['data']['document']['text'] == raw + 'updated\r\n'
     cache = workspace / 'home/index.sqlite'
     cache.write_bytes(b'intentionally invalid SQLite database')
     degraded = run('read', '@edge/中文', code=7)
