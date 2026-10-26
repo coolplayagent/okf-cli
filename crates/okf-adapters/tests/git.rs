@@ -118,3 +118,54 @@ fn git_symlink_objects_are_not_followed_even_without_worktree_links() {
         "GIT_UNSUPPORTED_ENTRY"
     );
 }
+
+#[test]
+fn cache_compaction_keeps_pinned_objects_and_serializes_writers() {
+    let source = tempfile::tempdir().unwrap();
+    git(source.path(), &["init", "--initial-branch=main"]);
+    let raw = "---\ntype: Note\n---\nold commit\n";
+    fs::write(source.path().join("note.md"), raw).unwrap();
+    git(source.path(), &["add", "."]);
+    git(source.path(), &["commit", "-m", "old"]);
+    let old = git(source.path(), &["rev-parse", "HEAD"]);
+    fs::write(source.path().join("note.md"), "---\ntype: Note\n---\nnew").unwrap();
+    git(source.path(), &["add", "."]);
+    git(source.path(), &["commit", "-m", "new"]);
+    let bare = tempfile::tempdir().unwrap();
+    git(
+        source.path(),
+        &["clone", "--bare", ".", bare.path().to_str().unwrap()],
+    );
+    let binding = BundleBinding {
+        id: "cache".into(),
+        name: "cache".into(),
+        kind: "git".into(),
+        root: bare.path().to_string_lossy().into_owned(),
+        scope: "project".into(),
+        git: Some(Git::pin(bare.path(), &old, "", &control()).unwrap()),
+    };
+    let lock = Git::lock(bare.path()).unwrap();
+    assert_eq!(
+        Git::cache(bare.path(), true, &control()).unwrap_err().code,
+        "GIT_CACHE_LOCKED"
+    );
+    drop(lock);
+    let stats = Git::cache(bare.path(), true, &control()).unwrap();
+    assert_eq!(stats["compacted"], true);
+    assert_eq!(
+        Git.read(&binding, "note.md", 1024, &control()).unwrap(),
+        raw
+    );
+    assert_eq!(
+        Git::fetch_bounded(
+            bare.path(),
+            "https://localhost:1/unreachable",
+            "main",
+            &control(),
+            1
+        )
+        .unwrap_err()
+        .code,
+        "GIT_STORAGE_LIMIT"
+    );
+}

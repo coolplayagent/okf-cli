@@ -1,0 +1,25 @@
+{
+  "description": "Deterministic retrieval tasks; evidence is authored, not model-graded. Not an Agent answer-quality benchmark.",
+  "documents": {
+    "auth.md": "---\ntype: Service\ntitle: 认证服务\ntags: [security, checkout]\n---\n# 登录\n认证失败时检查 token 的 audience。\n## Checkout\ncheckout requests require a valid token.\n# 运维\nRotate signing keys every quarter.\n",
+    "orders.md": "---\ntype: Service\ntitle: Orders\ntags: [checkout]\n---\n# Checkout\ncheckout retries must reuse the idempotency_key.\n# Retention\nOrders are retained for seven years.\n",
+    "retry.md": "---\ntype: Runbook\ntitle: Payment recovery\nstatus: stable\n---\n# Recovery\nUse exponential backoff for HTTP 429 responses.\n# Escalation\nContact the payments owner after five failures.\n",
+    "legacy.md": "---\ntype: Runbook\ntitle: Payment recovery legacy\nstatus: deprecated\n---\n# Recovery\nOld advice used immediate retries for HTTP 429 responses.\n",
+    "receipt.md": "---\ntype: Note\ntitle: Receipt protocol\n---\n# Contract\nexecutor.resource points to the receipt producer.\n# Verification\nThe attester verifies content_sha256 before accepting evidence.\n",
+    "unicode.md": "---\ntype: Note\ntitle: Locale handling\n---\n# Unicode\nİstanbul 认证 uses Unicode case folding examples.\n",
+    "headings.md": "---\ntype: Note\ntitle: Heading boundaries\n---\n# Parent\nIntroductory text.\n## Recovery\nrestart_worker resolves queue exhaustion.\n## Unrelated\nThis text must not enter the recovery excerpt.\n",
+    "code.md": "---\ntype: Note\ntitle: Code samples\n---\n# Example\n```python\n# not a heading\nretry_budget = 3\n```\n# Explanation\nUse retry_budget to cap attempts.\n"
+  },
+  "tasks": [
+    {"id":"zh-auth","query":"认证","evidence":{"auth.md":"检查 token 的 audience","unicode.md":"İstanbul 认证"}},
+    {"id":"cross-document-checkout","query":"checkout","evidence":{"auth.md":"require a valid token","orders.md":"reuse the idempotency_key"}},
+    {"id":"english-recovery","query":"exponential backoff","evidence":{"retry.md":"HTTP 429"}},
+    {"id":"symbol-resource","query":"executor.resource","evidence":{"receipt.md":"receipt producer"}},
+    {"id":"symbol-hash","query":"content_sha256","evidence":{"receipt.md":"attester verifies"}},
+    {"id":"mixed-query","query":"认证 audience","evidence":{"auth.md":"检查 token 的 audience"}},
+    {"id":"unicode-expansion","query":"i̇stanbul","evidence":{"unicode.md":"İstanbul 认证"}},
+    {"id":"section-selection","query":"restart_worker","evidence":{"headings.md":"queue exhaustion"}},
+    {"id":"code-block","query":"retry_budget","evidence":{"code.md":"retry_budget = 3"}},
+    {"id":"no-answer","query":"nonexistent_topic_314159","evidence":{}}
+  ]
+}

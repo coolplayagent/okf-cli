@@ -127,3 +127,9 @@ result = 1 + 1
 [计算合同样例](../crates/okf-core/tests/fixtures/computation-cases.json) 覆盖合同字段、未知 runtime、零参数、内联与文件形式、章节边界、标题可见文本及空正文定位。核对各消费命令返回相同诊断，且警告不影响消费、元数据覆盖和原文字节；正文与元数据警告分别验证共享上限。
 
 可使用 [okf-skills 校验器](https://github.com/scaccogatto/okf-skills/blob/49f8fb4987989b7a443ce278c6aa68ba0493b51f/skills/validate/scripts/okf_validate.py) 交叉核对默认模式下的结构合规结果。参考工具会提示部分推荐字段缺失，并采用不同的时间、来源和链接建议策略；本项目的警告策略以本矩阵为准，不要求警告条数一致。
+
+## 可选附件与锚点检查
+
+`validate --attachments` 增加普通正文链接的附件元信息检查，返回 `MISSING_ATTACHMENT` 字节位置警告；图片仍不参与检查。`--anchor-style headings-v1` 增加显式规则下的 `MISSING_ANCHOR` 警告，规则与覆盖说明见 [CLI 参考](cli-contract.md#关系导航与扩展检查)。这两项均不增加 OKF 必填要求，质量警告不改变文档结构合规性。
+
+附件与锚点结果分别返回 `attachment_check`、`anchor_check`，不替代原有 `link_check` 和计算 `resource_check`。完整列举前不判断链接目标缺失；附件只查询元信息，锚点复用本次已读取文档的标题清单。无法识别的自定义 HTML 锚点保留为未检查。

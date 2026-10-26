@@ -12,6 +12,7 @@
 | `bundle add NAME --kind git --path REPO --ref REF --bundle-path PATH` | 保存固定 commit 的 Git 知识包 |
 | `bundle add NAME --kind git --url HTTPS_URL [--ref REF]` | 获取公开 HTTPS 仓库；不能同时传入 `--path` |
 | `bundle refresh NAME` | 解析 Git ref 后原子替换提交，失败保留旧绑定 |
+| `bundle cache NAME [--compact]` | 查看托管远端对象占用，或重打包压缩；保留历史对象与引用 |
 | `context [--bundle NAME]` | 返回知识包概览与目录入口 |
 | `context --query QUERY [--bundle NAME]` | 返回元数据候选与原文读取入口 |
 | `browse REF` | 展开一层目录 |
@@ -23,6 +24,7 @@
 | `search QUERY --bundle NAME --full-text` | 检索同步索引的元数据与正文，返回原文片段 |
 | `context --query QUERY --bundle NAME --content` | 从同步索引选择较大的原文上下文窗口 |
 | `read REF --indexed [--generation GENERATION]` | 离线读取索引原文，可要求与检索结果版本一致 |
+| `neighbors REF [--direction incoming\|outgoing\|both]` | 从同步索引查询有证据的直接关系，默认 `both` |
 | `index status NAME` / `index clear NAME` | 查看或清理正文索引 |
 | `cache reset` | 归档观测数据库及 sidecar 后重建，活动读取者存在时拒绝 |
 | `doctor` | 查看版本、运行目录、项目目录、知识包数量和缓存可用性 |
@@ -71,6 +73,7 @@
 | `browse` | 20 | 16384 | 100 | 可选 | 30000 |
 | `read` | — | 65536 | — | 可选 | 30000 |
 | `search` | 20 | 16384 | 100 | — | 30000 |
+| `neighbors` | 20 | 16384 | 100 | — | 30000 |
 | `validate` | — | — | 100 | — | 30000 |
 | `sync` | — | — | 100 | — | 30000 |
 
@@ -86,6 +89,24 @@
 
 有后续分页时，`page.has_more` 为 true，`page.next_cursor` 和 `next` 给出继续入口。将 cursor 原样传给相同知识包、目标和操作；遇到 `REVISION_CHANGED` 时重新开始，不拼接不同修订。正常目录和原文分页返回退出码 0；搜索没有续页，达到结果或扫描上限时应缩小范围或提高预算。
 
+## 关系导航与扩展检查
+
+`neighbors` 需要先执行 `sync`，离线工作并返回 generation。它只提取 Markdown 概念链接与 `sources[].resource` 中的包内 `.md` 引用；正文相对路径以文档目录为基准，来源资源相对路径按包根解析。外部 URI、目录、附件和图片不构成概念边；不根据文字相似性推断关系。
+
+每个结果包含 `from`、`to`、方向、目标是否存在，以及证据文件哈希和正文 `location` 或元数据 `field`。缺失目标仍保留，循环关系只报告直接边。`--limit`、`--budget-bytes`、`--max-scan`、`--timeout-ms` 默认值与搜索一致；扫描预算计索引文档数，单文档正文链接与来源各最多 256 条。`relationship_check.complete` 描述关系扫描，结果选择不足另报 `RESULT_LIMIT`；扫描或引用截断时不能把没有入链解释成全包没有引用。
+
+`validate --attachments` 用元信息查询检查非 Markdown 正文链接的存在性与文件类型，不读取附件内容，不检查图片。结果独立返回 `attachment_check`；与正文链接共用数量和字符串预算。
+
+`validate --anchor-style headings-v1` 显式启用标题锚点规则：提取 Markdown 标题文字与行内代码，转小写，空白替换为 `-`，保留字母、数字、`_`、`-`，重复 ID 顺序追加 `-1` 等后缀。解析 URL 百分号编码后匹配。该规则是 CLI 扩展，不代表所有渲染器；默认不检查锚点。存在自定义 HTML、无法解码的片段或不完整标题清单时，将无法确定的目标计入 `anchor_check.skipped`，不产生缺失锚点误报。每文件最多 4096 个标题，包内标题清单总估算占用最多 2 MiB；超限或扫描中断分别报告覆盖。
+
+## Git 远端与缓存
+
+`bundle add`、`bundle refresh`、`bundle cache` 支持 `--timeout-ms`，默认 30000。公开 HTTPS 获取支持 `--max-git-bytes`，默认 268435456（256 MiB）。它是托管仓库对象目录的总占用预算，获取前、获取期间约每 50 ms 及获取后检查；可能存在检查间隔内的超量写入，不是精确网络字节上限。超限不发布新绑定，已获取的对象可能保留，后续可调整预算。
+
+同一托管仓库的获取、刷新与压缩通过系统锁互斥。`bundle cache NAME --compact` 仅作用于运行目录内的托管远端仓库，保留历史引用及不可达对象，消除冗余打包占用；不对用户本地仓库执行清理，也不实施历史版本过期删除。
+
+远端失败使用 `GIT_AUTH_FAILED`、`GIT_TLS_FAILED`、`GIT_REMOTE_NOT_FOUND` 或 `GIT_TRANSPORT_FAILED`，对象占用超限使用 `GIT_STORAGE_LIMIT`（7），写锁竞争使用 `GIT_CACHE_LOCKED`（5）。原始 Git stderr 不进入响应。普通对象缺失仍使用 `GIT_OBJECT_UNAVAILABLE`。网络失败与预算不足均保留旧绑定。
+
 ## 截止时间与取消
 
 消费命令支持 Ctrl+C 取消，诊断为 `CANCELLED`；超过截止时间时为 `DEADLINE_EXCEEDED`，均使用退出码 7。检查点覆盖目录遍历、逐文件处理和分块读取。概览、检索和校验保留已完成结果；浏览在处理条目时中断也保留已有结果，但无法完成初始目录列举时返回错误。原文读取中断返回错误。
@@ -94,11 +115,15 @@
 
 ## 搜索与生命周期
 
+`search` 与 `context --query` 支持 `--type`、`--tag`、`--status` 精确匹配；同一选项重复表示 OR，不同字段之间为 AND，大小写敏感。筛选发生在结果截断之前，实时与索引模式采用相同规则。不带查询的概览拒绝这些筛选选项。
+
 查询按空白拆词，忽略大小写，并要求所有词都在卡片的检索字段中出现。支持中文子串，结果按知识包引用排序。`context --query` 复用元数据检索，返回 `disclosure: metadata_candidates` 与 `read` 入口。
 
-全文模式要求每个词出现在卡片或正文中，元数据命中每词计 5 分、仅正文命中每词计 1 分，同分按引用排序。它是确定性子串检索，未使用向量或分词模型。结果的 `snippet` 含原始字节范围与文本，普通片段最多 512 字节，正文上下文最多 4096 字节，均受整体条目预算约束。上下文优先从命中行之前最近的标题开始，标题距命中过远时从命中字节位置开始。`coverage_gaps` 表达未选命中和未检查实时文件的事实。
+全文模式要求每个词出现在卡片或正文中，元数据命中每词计 5 分、仅正文命中每词计 1 分，同分按引用排序。它是确定性子串检索，未使用向量或分词模型。结果的 `snippet` 含原始字节范围与文本，普通片段最多 512 字节，正文上下文最多 4096 字节，均受整体条目预算约束。标题边界来自 Markdown 解析器，代码块中的 `#` 不作为标题。上下文从包含命中的最近章节开始，在下一个同级或上级标题前结束；标题距命中过远时从命中字节位置开始。每份文档只返回一个窗口，避免同一文档的重叠片段；不合并不同文件的来源。`coverage_gaps` 表达未选命中和未检查实时文件的事实。
 
 `sync` 只在完整、无结构错误的扫描后发布 generation；取消、预算不足或文件错误均保留旧索引。并发发布基于旧 generation 比较，冲突返回 `INDEX_CHANGED`（6）。`read --indexed` 的 cursor 绑定 generation；`--generation` 可在首个分页就拒绝过时的检索引用。索引视图的 `freshness` 为 `cached`，`checked_at` 为同步时间；本地文件索引仍是观测视图。`matches_binding_revision` 对 Git 表示索引提交是否等于当前绑定提交，对文件系统不证明源文件未变。
+
+正文片段使用的标题清单每文件最多 4096 项；超过时返回 `SECTION_LIMIT` 和部分结果，片段仍保留精确字节定位，但章节边界可能不完整。
 
 卡片中的 `trust`、`status` 和 `expiry` 从元数据派生。审核层级为 `unverified`、`machine-confirmed` 或 `human-reviewed`；过期状态为 `unspecified`、`current`、`expired` 或 `unknown`。默认值与异常值的处理见 [派生与覆盖](okf-validation.md#派生与覆盖)。这些字段表达源文件声明，不提供身份验证或内容真实性保证。
 

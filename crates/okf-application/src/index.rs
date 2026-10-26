@@ -160,7 +160,11 @@ impl App<'_> {
         Ok(response)
     }
 
-    fn snapshot(&self, name: &str, index: &dyn Index) -> Result<(BundleBinding, Snapshot)> {
+    pub(crate) fn snapshot(
+        &self,
+        name: &str,
+        index: &dyn Index,
+    ) -> Result<(BundleBinding, Snapshot)> {
         self.control.check()?;
         let binding = self.binding(name)?;
         let snapshot = index
@@ -188,6 +192,25 @@ impl App<'_> {
         options: &ReadOptions,
         index: &dyn Index,
         context: bool,
+    ) -> Result<Response> {
+        self.indexed_search_filtered(
+            query,
+            name,
+            options,
+            index,
+            context,
+            &crate::SearchFilter::default(),
+        )
+    }
+
+    pub fn indexed_search_filtered(
+        &self,
+        query: &str,
+        name: &str,
+        options: &ReadOptions,
+        index: &dyn Index,
+        context: bool,
+        filter: &crate::SearchFilter,
     ) -> Result<Response> {
         let terms: Vec<_> = query.split_whitespace().map(str::to_lowercase).collect();
         if terms.is_empty() {
@@ -220,6 +243,9 @@ impl App<'_> {
             let doc = Document::parse(&document.raw)?;
             let id = document.path.strip_suffix(".md").unwrap_or(&document.path);
             let card = doc.card(id, self.now);
+            if !filter.matches(&serde_json::to_value(&card).map_err(Error::io)?) {
+                continue;
+            }
             let metadata = serde_json::to_string(&card)
                 .map_err(Error::io)?
                 .to_lowercase();
@@ -241,13 +267,24 @@ impl App<'_> {
                 .iter()
                 .map(|t| if metadata.contains(t) { 5 } else { 1 })
                 .sum::<usize>();
-            let (start, end) = excerpt(
+            let (start, end, boundaries_complete) = excerpt(
                 &document.raw,
                 doc.body_start,
                 &terms,
                 if context { 4096 } else { 512 },
                 context,
             );
+            if !boundaries_complete
+                && !response
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == "SECTION_LIMIT")
+            {
+                response.partial(
+                    "SECTION_LIMIT",
+                    "heading inventory truncated; excerpt boundaries may be incomplete",
+                );
+            }
             let mut item = serde_json::to_value(card).map_err(Error::io)?;
             item["ref"] = json!(format!("@{name}/{id}"));
             item["content_sha256"] = json!(document.hash);
@@ -373,7 +410,7 @@ impl App<'_> {
     }
 }
 
-fn indexed_observation(
+pub(crate) fn indexed_observation(
     response: &mut Response,
     binding: &BundleBinding,
     snapshot: &Snapshot,
@@ -391,14 +428,11 @@ fn excerpt(
     terms: &[String],
     limit: usize,
     section: bool,
-) -> (usize, usize) {
+) -> (usize, usize, bool) {
     let mut offset = body_start;
-    let mut heading = body_start;
+    let sections = okf_core::sections::Sections::parse(raw, body_start);
     let mut hit = None;
     for line in raw[body_start..].split_inclusive('\n') {
-        if line.starts_with('#') {
-            heading = offset;
-        }
         let lower = line.to_lowercase();
         if let Some(normalized) = terms.iter().filter_map(|term| lower.find(term)).min() {
             // Lowercasing can change UTF-8 length (for example U+0130). Map the
@@ -413,6 +447,9 @@ fn excerpt(
                     contains.then_some(index)
                 })
                 .unwrap_or(0);
+            let heading = sections
+                .containing(offset + original)
+                .map_or(body_start, |h| h.start);
             hit = Some((if section { heading } else { offset }, offset + original));
             break;
         }
@@ -422,11 +459,21 @@ fn excerpt(
     if hit - start >= limit {
         start = hit;
     }
-    let mut end = (start + limit).min(raw.len());
+    let section_end = sections.containing(hit).map_or_else(
+        || {
+            sections
+                .headings
+                .iter()
+                .find(|h| h.start > hit)
+                .map_or(raw.len(), |h| h.start)
+        },
+        |h| h.end,
+    );
+    let mut end = (start + limit).min(section_end);
     while !raw.is_char_boundary(end) {
         end -= 1;
     }
-    (start, end)
+    (start, end, sections.complete)
 }
 
 #[cfg(test)]
@@ -436,11 +483,12 @@ mod tests {
     fn long_unicode_lines_keep_the_match_and_original_offsets() {
         let raw = format!("# Heading\n{}İ认证 executor.resource 🙂", "前".repeat(1000));
         for section in [false, true] {
-            let (start, end) = excerpt(&raw, 0, &["认证".into()], 128, section);
+            let (start, end, complete) = excerpt(&raw, 0, &["认证".into()], 128, section);
+            assert!(complete);
             assert!(raw[start..end].contains("认证"));
             assert!(end - start <= 128);
         }
-        let (start, end) = excerpt(&raw, 0, &["i\u{307}".into()], 128, false);
+        let (start, end, _) = excerpt(&raw, 0, &["i\u{307}".into()], 128, false);
         assert!(raw[start..end].starts_with('İ'));
     }
 }

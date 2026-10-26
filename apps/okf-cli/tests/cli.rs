@@ -1214,3 +1214,140 @@ fn git_cli_refresh_keeps_old_pages_until_explicit_refresh_and_failed_refresh_pre
         before["data"]
     );
 }
+
+#[test]
+fn filtered_context_stops_at_peer_sections_and_keeps_code_headings() {
+    let f = Fixture::new();
+    f.bind();
+    let raw = "---\ntype: Runbook\ntitle: recovery\ntags: [ops]\nstatus: stable\n---\n# Parent\n## Recovery\n```python\n# fake heading\nrestart_worker()\n```\n## Unrelated\nnot evidence\n";
+    fs::write(f.work.path().join("knowledge/recovery.md"), raw).unwrap();
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+    let response = value(&f.run(&[
+        "context",
+        "--query",
+        "restart_worker",
+        "--bundle",
+        "book",
+        "--content",
+        "--type",
+        "Runbook",
+        "--tag",
+        "ops",
+        "--status",
+        "stable",
+    ]));
+    assert_eq!(response["page"]["returned"], 1);
+    let snippet = &response["data"]["items"][0]["snippet"];
+    let text = snippet["text"].as_str().unwrap();
+    assert!(text.starts_with("## Recovery"));
+    assert!(!text.contains("Unrelated"));
+    assert_eq!(
+        text,
+        &raw[snippet["byte_start"].as_u64().unwrap() as usize
+            ..snippet["byte_end"].as_u64().unwrap() as usize]
+    );
+    for mode in [vec![], vec!["--full-text"]] {
+        let mut args = vec![
+            "search", "recovery", "--bundle", "book", "--type", "Service",
+        ];
+        args.extend(mode);
+        assert_eq!(value(&f.run(&args))["page"]["returned"], 0);
+    }
+    assert_eq!(f.run(&["context", "--tag", "ops"]).status.code(), Some(2));
+}
+
+#[test]
+fn indexed_neighbors_report_evidence_cycles_missing_targets_and_limits() {
+    let f = Fixture::new();
+    f.bind();
+    let a="---\ntype: Note\nsources:\n  - resource: b.md\n---\n[B](b.md#heading) [missing](gone.md)\n";
+    fs::write(f.work.path().join("knowledge/a.md"), a).unwrap();
+    fs::write(
+        f.work.path().join("knowledge/b.md"),
+        "---\ntype: Note\n---\n# Heading\n[A](a.md)\n",
+    )
+    .unwrap();
+    assert_eq!(f.run(&["sync", "book"]).status.code(), Some(0));
+    fs::rename(
+        f.work.path().join("knowledge"),
+        f.work.path().join("offline"),
+    )
+    .unwrap();
+    let response = value(&f.run(&["neighbors", "@book/a"]));
+    assert_eq!(response["page"]["returned"], 4);
+    let edges = response["data"]["items"].as_array().unwrap();
+    assert!(edges.iter().any(|e| e["target_exists"] == false));
+    assert!(edges
+        .iter()
+        .any(|e| e["evidence"]["reference"]["field"] == "/sources/0/resource"));
+    let edge = edges
+        .iter()
+        .find(|e| {
+            e["from"] == "@book/a.md" && e["evidence"]["reference"]["kind"] == "markdown_link"
+        })
+        .unwrap();
+    let location = &edge["evidence"]["reference"]["location"];
+    assert!(a[location["byte_start"].as_u64().unwrap() as usize
+        ..location["byte_end"].as_u64().unwrap() as usize]
+        .contains("b.md"));
+    assert_eq!(
+        value(&f.run(&["neighbors", "@book/a", "--direction", "incoming"]))["page"]["returned"],
+        1
+    );
+    assert_eq!(
+        f.run(&["neighbors", "@book/a", "--limit", "1"])
+            .status
+            .code(),
+        Some(7)
+    );
+    let limited = value(&f.run(&["neighbors", "@book/a", "--max-scan", "1"]));
+    assert_eq!(limited["data"]["relationship_check"]["complete"], false);
+    assert!(limited["page"]["total"].is_null());
+}
+
+#[test]
+fn attachment_and_anchor_checks_are_opt_in_and_custom_html_is_inconclusive() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(f.work.path().join("knowledge/links.md"),"---\ntype: Note\n---\n# 中文\n# 中文\n[valid](#%E4%B8%AD%E6%96%87-1) [bad](#absent) [file](asset.bin) [missing](missing.bin) [custom](custom.md#custom)\n").unwrap();
+    fs::write(
+        f.work.path().join("knowledge/custom.md"),
+        "---\ntype: Note\n---\n<a id='custom'></a>\n",
+    )
+    .unwrap();
+    fs::write(f.work.path().join("knowledge/asset.bin"), [0, 255, 128]).unwrap();
+    let plain = value(&f.run(&["validate", "book"]));
+    assert!(plain["data"]["attachment_check"].is_null());
+    let output = f.run(&[
+        "validate",
+        "book",
+        "--attachments",
+        "--anchor-style",
+        "headings-v1",
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    let response = value(&output);
+    assert_eq!(response["data"]["attachment_check"]["complete"], true);
+    assert_eq!(response["data"]["attachment_check"]["checked"], 2);
+    assert_eq!(response["data"]["anchor_check"]["skipped"], 1);
+    let diagnostics = response["diagnostics"].as_array().unwrap();
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d["code"] == "MISSING_ANCHOR")
+            .count(),
+        1
+    );
+    assert_eq!(
+        diagnostics
+            .iter()
+            .filter(|d| d["code"] == "MISSING_ATTACHMENT")
+            .count(),
+        1
+    );
+    assert_eq!(
+        value(&f.run(&["validate", "book", "--attachments", "--max-scan", "1"]))["data"]
+            ["attachment_check"]["complete"],
+        false
+    );
+}

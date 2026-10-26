@@ -3,58 +3,268 @@
   "$id": "https://github.com/coolplayagent/okf-cli/schemas/response.schema.json",
   "title": "okf CLI response envelope",
   "type": "object",
-  "required": ["schema_version", "request_id", "command", "status", "data", "bundles", "page", "budget", "diagnostics", "next"],
+  "required": [
+    "schema_version",
+    "request_id",
+    "command",
+    "status",
+    "data",
+    "bundles",
+    "page",
+    "budget",
+    "diagnostics",
+    "next"
+  ],
   "properties": {
-    "schema_version": {"const": "2.0"},
-    "request_id": {"type": "string"},
-    "command": {"type": "string"},
-    "status": {"enum": ["ok", "partial", "error"]},
-    "data": {"type": "object", "properties": {
-      "generation": {"type": "string"}, "published": {"type": "boolean"},
-      "resource_check": {"type": "object", "required": ["scope", "complete", "external_skipped"], "properties": {
-        "scope": {"const": "bundle_computation_resources"}, "complete": {"type": "boolean"}, "external_skipped": {"type": "integer", "minimum": 0}
-      }}
-    }},
-    "bundles": {"description": "Live or synchronized knowledge views.", "type": "array", "items": {"type": "object", "properties": {
-      "view_kind": {"enum": ["observed", "snapshot"]}, "upstream_revision": {"type": ["string", "null"]},
-      "index_generation": {"type": "string"}, "freshness": {"enum": ["checked", "unknown", "cached"]}
-    }}},
-    "page": {
+    "schema_version": {
+      "const": "2.0"
+    },
+    "request_id": {
+      "type": "string"
+    },
+    "command": {
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "partial",
+        "error"
+      ]
+    },
+    "data": {
       "type": "object",
-      "required": ["returned", "total", "has_more", "next_cursor"],
       "properties": {
-        "returned": {"type": "integer", "minimum": 0},
-        "total": {"type": ["integer", "null"], "minimum": 0},
-        "has_more": {"type": "boolean"},
-        "next_cursor": {"type": ["string", "null"]}
+        "generation": {
+          "type": "string"
+        },
+        "published": {
+          "type": "boolean"
+        },
+        "resource_check": {
+          "type": "object",
+          "required": [
+            "scope",
+            "complete",
+            "external_skipped"
+          ],
+          "properties": {
+            "scope": {
+              "const": "bundle_computation_resources"
+            },
+            "complete": {
+              "type": "boolean"
+            },
+            "external_skipped": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "attachment_check": {
+          "type": "object",
+          "required": [
+            "scope",
+            "checked",
+            "images_included",
+            "complete"
+          ],
+          "properties": {
+            "scope": {
+              "const": "bundle_body_links"
+            },
+            "checked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "images_included": {
+              "const": false
+            },
+            "complete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "anchor_check": {
+          "type": "object",
+          "required": [
+            "profile",
+            "checked",
+            "skipped",
+            "complete"
+          ],
+          "properties": {
+            "profile": {
+              "const": "headings-v1"
+            },
+            "checked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "skipped": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "complete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "relationship_check": {
+          "type": "object",
+          "required": [
+            "scope",
+            "source_paths",
+            "complete"
+          ],
+          "properties": {
+            "scope": {
+              "enum": [
+                "document",
+                "bundle"
+              ]
+            },
+            "source_paths": {
+              "const": "bundle_root_relative"
+            },
+            "complete": {
+              "type": "boolean"
+            }
+          }
+        }
       }
     },
-    "budget": {"type": "object"},
+    "bundles": {
+      "description": "Live or synchronized knowledge views.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "view_kind": {
+            "enum": [
+              "observed",
+              "snapshot"
+            ]
+          },
+          "upstream_revision": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "index_generation": {
+            "type": "string"
+          },
+          "freshness": {
+            "enum": [
+              "checked",
+              "unknown",
+              "cached"
+            ]
+          }
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "required": [
+        "returned",
+        "total",
+        "has_more",
+        "next_cursor"
+      ],
+      "properties": {
+        "returned": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "total": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "has_more": {
+          "type": "boolean"
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "budget": {
+      "type": "object"
+    },
     "diagnostics": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["code", "message", "path", "severity", "field"],
+        "required": [
+          "code",
+          "message",
+          "path",
+          "severity",
+          "field"
+        ],
         "properties": {
-          "code": {"type": "string"},
-          "message": {"type": "string"},
-          "path": {"type": ["string", "null"]},
-          "severity": {"enum": ["error", "warning"]},
-          "field": {"description": "JSON Pointer into concept frontmatter; null for document or operation diagnostics.", "type": ["string", "null"], "pattern": "^/"},
+          "code": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "severity": {
+            "enum": [
+              "error",
+              "warning"
+            ]
+          },
+          "field": {
+            "description": "JSON Pointer into concept frontmatter; null for document or operation diagnostics.",
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^/"
+          },
           "location": {
             "description": "Optional half-open UTF-8 byte range in the complete original file, including BOM and frontmatter.",
             "type": "object",
-            "required": ["byte_start", "byte_end"],
+            "required": [
+              "byte_start",
+              "byte_end"
+            ],
             "properties": {
-              "byte_start": {"type": "integer", "minimum": 0},
-              "byte_end": {"type": "integer", "minimum": 0}
+              "byte_start": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "byte_end": {
+                "type": "integer",
+                "minimum": 0
+              }
             },
             "additionalProperties": false
           }
         }
       }
     },
-    "next": {"type": "array", "items": {"type": "object"}}
+    "next": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    }
   },
   "additionalProperties": false
 }
