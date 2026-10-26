@@ -215,7 +215,9 @@ with tempfile.TemporaryDirectory(prefix='okf-https-') as temporary:
         assert success('bundle', 'show', 'remote')['data']['bundle']['git']['commit'] == first
         quota = success('bundle', 'cache', 'remote')['data']['object_bytes'] + 1024
         run(['bundle', 'refresh', 'remote', '--max-git-bytes', str(quota)], 'GIT_STORAGE_LIMIT', 7)
-        record('after_quota', locks=[str(p.relative_to(cache)) for p in cache.rglob('*.lock')])
+        locks = [str(p.relative_to(cache)) for p in cache.rglob('*.lock')]
+        record('after_quota', locks=locks)
+        assert not locks, locks
         assert success('bundle', 'show', 'remote')['data']['bundle']['git']['commit'] == first
         assert success('bundle', 'refresh', 'remote')['data']['bundle']['git']['commit'] != first
         success('bundle', 'cache', 'remote', '--compact')

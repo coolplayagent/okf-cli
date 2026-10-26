@@ -52,7 +52,7 @@ Git 测试覆盖固定提交读取、刷新与对象类型限制；索引测试�
 
 | 检查 | 结果 |
 | --- | --- |
-| Rust 测试与静态检查 | Debug、Release 各 85 项通过；fmt、Clippy 通过 |
+| Rust 测试与静态检查 | Windows Debug、Release 各 86 项通过；fmt、Clippy 通过；Unix CI 额外执行进程终止与锁清理回归 |
 | 响应契约 | 25 类实际 CLI 响应通过 JSON Schema 校验 |
 | HTTPS Git | 真实 Git 经本地 HTTPS 服务完成获取、刷新、压缩及证书、认证、404、断连、超时、配额故障测试 |
 | 检索 | 固定任务、1000/5000/10000 份干扰文档的索引查询及跨包 20 个任务/模式/策略组合通过 |
@@ -64,6 +64,6 @@ Git 测试覆盖固定提交读取、刷新与对象类型限制；索引测试�
 
 本轮复现并修复了索引正文损坏但保存的哈希未变时，同步无法恢复正文的问题；适配器回归和实际 CLI 验收覆盖损坏检测、同步修复及原 generation 读取。此前修复的 Python 优化模式发行校验继续由交付验收覆盖。检索指标及适用边界见 [检索任务评测](retrieval-evaluation.md)。
 
-PR #8 已合并且三平台 CI 通过；其 macOS HTTPS 测试曾失败后重跑通过，根因未确认。本轮改造尚未运行远端三平台 CI，也未验证 Release 草稿创建。
+PR #9 的首轮 push 检查三平台通过，但 PR 检查在 macOS 配额中断后的刷新失败。诊断产物确认直接强杀 Git 留下 `shallow.lock`；已改为 Unix 进程组先接收 SIGTERM，等待 500 ms 清理，再强制终止，并补充退出清理与错误分类回归。修复后的三平台结果以 PR 检查为准；Release 草稿创建仍待验证。
 
-HTTPS 测试现将阶段日志保存到 `target/verification/https`，Unix 另保留仅针对临时本地仓库的 Git 事件和传输跟踪；两个工作流均上传这些产物。可用 `python scripts/check_git_https.py BINARY --repeat 5` 连续执行，或加 `--payload-bytes 1048576` 扩大传输载荷。任一轮失败立即停止，连续运行不作为自动重试。Windows 的五轮常规测试和一轮较大载荷测试通过，未发现配额中断后的遗留锁；这不能证明原 macOS 偶发问题已修复。
+HTTPS 测试现将阶段日志保存到 `target/verification/https`，Unix 另保留仅针对临时本地仓库的 Git 事件和传输跟踪；两个工作流均上传这些产物。可用 `python scripts/check_git_https.py BINARY --repeat 5` 连续执行，或加 `--payload-bytes 1048576` 扩大传输载荷。任一轮失败立即停止，连续运行不作为自动重试。提交前 Windows 的五轮常规测试和一轮较大载荷测试通过。配额测试现显式断言没有遗留 Git 锁，并继续验证刷新成功；此前 PR #8 的失败未保存同等诊断，不能断言与本次原因完全相同。
