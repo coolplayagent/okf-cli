@@ -25,9 +25,9 @@ with tempfile.TemporaryDirectory(prefix='okf-package-negative-') as temporary:
     (isolated / 'scripts').mkdir()
     shutil.copyfile(root / 'scripts/package.py', isolated / 'scripts/package.py')
     shutil.copyfile(root / 'Cargo.toml', isolated / 'Cargo.toml')
-    skill = isolated / 'skills/okf-consume/SKILL.md'
+    skill = isolated / 'skills/okf-cli/SKILL.md'
     skill.parent.mkdir(parents=True)
-    shutil.copyfile(root / 'skills/okf-consume/SKILL.md', skill)
+    shutil.copyfile(root / 'skills/okf-cli/SKILL.md', skill)
     def rejected(message, *arguments):
         expect_rejection(isolated / 'scripts/package.py', [binary, *arguments], message, isolated)
         if (isolated / 'target/dist').exists():
@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix='okf-package-negative-') as temporary:
     rejected('tag/workspace version mismatch', '--tag', 'v9999.0.0')
     skill.write_text('stale embedded skill', encoding='utf-8')
     rejected('rebuild binary after changing')
-    shutil.copyfile(root / 'skills/okf-consume/SKILL.md', skill)
+    shutil.copyfile(root / 'skills/okf-cli/SKILL.md', skill)
     (isolated / 'Cargo.toml').write_text('[workspace.package]\nversion = "9999.0.0"\n', encoding='utf-8')
     rejected('binary/workspace version mismatch')
     archive = isolated / 'invalid.zip'

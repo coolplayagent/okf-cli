@@ -118,13 +118,15 @@ okf bundle remove handbook --scope project
 
 ## Agent Skill
 
-将消费 Skill 安装到 Agent 使用的技能目录：
+当前源码中的消费 Skill 名为 `okf-cli`，目录为 [`skills/okf-cli`](skills/okf-cli/SKILL.md)。使用从当前源码构建的二进制，将其安装到 Agent 使用的技能目录：
 
 ```sh
-okf skill install .agents/skills/okf-consume
+okf skill install .agents/skills/okf-cli
 ```
 
 Skill 引导 Agent 发现知识包、检索候选概念、按需读取原文并保留知识包与生命周期信息。已有的 `SKILL.md` 不会被覆盖。
+
+此改名尚未发布，已发布的 `v0.1.0` 二进制仍内置 `okf-consume`；仅改变安装目录不会改变内置 Skill 的名称。已有安装的迁移步骤见 [Skill 更名与升级](docs/releases.md#skill-更名与升级)。
 
 ## 开发
 

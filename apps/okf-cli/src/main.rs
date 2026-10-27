@@ -492,7 +492,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             .create_new(true)
             .open(&destination)
             .map_err(Error::io)?;
-        file.write_all(include_bytes!("../../../skills/okf-consume/SKILL.md"))
+        file.write_all(include_bytes!("../../../skills/okf-cli/SKILL.md"))
             .map_err(Error::io)?;
         return Ok(Response::new("skill install", json!({"path": destination})));
     }

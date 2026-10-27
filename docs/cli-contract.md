@@ -33,6 +33,8 @@
 | `skill install PATH` | 将内置消费 Skill 写入指定目录 |
 | `help [COMMAND]` / `--help` | 显示文本帮助 |
 
+`skill install PATH` 创建 `PATH/SKILL.md`，写入二进制内嵌内容；`PATH` 不决定 Skill 名称。当前源码内嵌 `name: okf-cli`，示例为 `okf skill install .agents/skills/okf-cli`。安装不打开绑定配置或数据库，不迁移旧目录；已有 `SKILL.md` 时返回退出码 5 并保留原内容。已发布版本与当前源码的名称差异见 [Skill 更名与升级](releases.md#skill-更名与升级)。
+
 概览与元数据检索的 `--bundle` 可重复使用，未指定时选择已绑定的全部知识包。全文检索和正文上下文要求至少一个 `--bundle`，重复别名只查询一次。同名项目与用户知识包绑定必须通过 `--scope` 区分。`context` 和 `search` 没有知识包时返回 `NO_BUNDLES`，不会自动扫描当前目录寻找知识包。
 
 别名长度为 1–64 个 ASCII 字符，只能包含字母、数字、`-` 和 `_`。存储类型支持 `fs` 与 `git`，其他类型返回 `UNSUPPORTED_CAPABILITY`。
@@ -232,4 +234,4 @@
 
 扫描、链接或资源预算耗尽，读取失败，诊断截断，以及已启用检查中的未知目标都会阻止门槛通过。完整检查超限返回 `WARNING_LIMIT_EXCEEDED`、退出码 1；不完整检查优先保持退出码 7，只有警告截断等导致计数不完整而此前尚未标记部分结果时增加 `QUALITY_GATE_INCOMPLETE`。已确定的结构错误保留退出码 1；缓存等操作错误不会被质量门槛覆盖。即使 `passed: true`，仍需检查响应执行状态。默认未指定门槛时行为不变。
 
-Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际读取的文件、字节范围和内容哈希，并保留影响答案的过期、审核和覆盖限定。消费流程见 [消费 Skill](../skills/okf-consume/SKILL.md)。
+Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际读取的文件、字节范围和内容哈希，并保留影响答案的过期、审核和覆盖限定。消费流程见 [消费 Skill](../skills/okf-cli/SKILL.md)。

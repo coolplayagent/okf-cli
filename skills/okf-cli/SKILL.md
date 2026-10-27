@@ -1,5 +1,5 @@
 ---
-name: okf-consume
+name: okf-cli
 description: Read bound OKF knowledge bundles through the installed okf CLI. Use when project knowledge, architecture, decisions, or runbooks should inform a task.
 ---
 

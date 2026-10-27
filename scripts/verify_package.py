@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory(prefix='okf-package-') as temporary:
     installed = destination / 'installed-skill'
     subprocess.run([str(binary), 'skill', 'install', str(installed)], env=env, cwd=destination,
                    check=True, stdout=subprocess.DEVNULL)
-    require((installed / 'SKILL.md').read_bytes() == (destination / 'skills/okf-consume/SKILL.md').read_bytes(), 'binary/archive embedded skill mismatch')
+    require((installed / 'SKILL.md').read_bytes() == (destination / 'skills/okf-cli/SKILL.md').read_bytes(), 'binary/archive embedded skill mismatch')
     for script in ('smoke.py', 'acceptance.py'):
         subprocess.run([sys.executable, str(root / 'scripts' / script), str(binary)],
                        env=env, check=True, timeout=300)

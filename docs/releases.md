@@ -24,6 +24,18 @@ CLI 源码构建方法见 [README](../README.md#安装与构建)。Python 3.11 �
 
 内置消费 Skill 随二进制发行。升级 Skill 时，先安装到新目录，对比并合并已有定制；`skill install` 保留防覆盖行为。
 
+### Skill 更名与升级
+
+当前源码将消费 Skill 从 `okf-consume` 更名为 `okf-cli`：源码与新构建包中的路径为 `skills/okf-cli/SKILL.md`，文件 frontmatter 为 `name: okf-cli`。此变更尚未发布；已发布的 `v0.1.0` 及其 tag 重建包仍使用旧名称。CLI 可执行文件仍为 `okf`，知识包绑定和数据库格式不受此改名影响。
+
+从当前源码重新构建并使用新二进制执行：
+
+```sh
+okf skill install .agents/skills/okf-cli
+```
+
+确认安装文件中的 `name: okf-cli`，将旧目录中的定制合并到新文件，再更新 Agent 配置或提示中的 Skill 名称与路径。确认新 Skill 可用后，将旧目录移出 Agent 的技能发现目录，避免同时加载两份。安装命令不会自动迁移或删除旧目录；目标已有 `SKILL.md` 时会拒绝覆盖，可先安装到临时目录后比较合并。使用旧二进制安装到新目录仍会得到旧名称。
+
 ## 本地发行验收
 
 ```sh
