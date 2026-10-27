@@ -1,2 +1,4 @@
 # Upstream fixture hashes refer to original bytes, including line endings.
 fixtures/upstream/** -text
+# Embedded instructions must have identical bytes on every release platform.
+skills/** text eol=lf
