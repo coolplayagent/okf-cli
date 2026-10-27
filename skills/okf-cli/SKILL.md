@@ -7,6 +7,8 @@ description: Read bound OKF knowledge bundles through the installed okf CLI. Use
 
 Use the installed `okf` executable and request `--format json`. This skill only reads knowledge. It does not create bindings or install dependencies without a user request.
 
+When this skill includes `assets/`, prefer the bundled executable for the host: `assets/windows-x86_64/okf.exe` for Windows x64, `assets/linux-x86_64/okf` for Linux x64 (glibc 2.35+), or `assets/macos-arm64/okf` for macOS Apple Silicon (14+). Resolve it relative to this `SKILL.md` and use its absolute path in place of `okf` below, keeping the working directory in the user's project so project bindings remain discoverable. On Unix, restore execute permission with `chmod +x` if the ZIP extractor discarded it. Run `--version` before use. If no matching bundled executable exists, use the installed `okf`; do not run a binary for another architecture. Git bundles still require Git; Windows requires the VC/UCRT runtime.
+
 1. Run `okf context --format json` to discover registered bundles. If none exist, explain that the user must bind a knowledge directory with `okf bundle add NAME --kind fs --path PATH`.
 2. Run `okf context --query "task terms" --bundle NAME --format json` for metadata candidates, or `okf browse @NAME --format json` for a directory map.
 3. Read the `bundles`, `coverage`, `diagnostics`, `page` and `next` fields before interpreting results. A metadata card is not a read of its body; incomplete coverage is not proof that knowledge is absent.

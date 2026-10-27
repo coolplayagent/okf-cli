@@ -126,7 +126,7 @@ okf skill install .agents/skills/okf-cli
 
 Skill 引导 Agent 发现知识包、检索候选概念、按需读取原文并保留知识包与生命周期信息。已有的 `SKILL.md` 不会被覆盖。
 
-此改名尚未发布，已发布的 `v0.1.0` 二进制仍内置 `okf-consume`；仅改变安装目录不会改变内置 Skill 的名称。已有安装的迁移步骤见 [Skill 更名与升级](docs/releases.md#skill-更名与升级)。
+2026-10-27 重建的 `v0.1.0` 包内置 `okf-cli`，并提供包含三平台二进制的独立 Skill ZIP。此前下载的同版本二进制可能仍内置 `okf-consume`；请通过 `build-info` 的来源提交和发行附件哈希区分。已有安装的迁移步骤见 [Skill 更名与升级](docs/releases.md#skill-更名与升级)。
 
 ## 开发
 

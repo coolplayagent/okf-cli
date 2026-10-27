@@ -10,8 +10,12 @@ on:
     tags: ['v*']
 permissions:
   contents: read
+concurrency:
+  group: package-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
   package:
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -60,6 +64,7 @@ jobs:
         with:
           name: okf-cli-${{ runner.os }}-${{ runner.arch }}
           path: target/dist/*
+          if-no-files-found: error
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -74,21 +79,69 @@ jobs:
             target/verification/runtime.json
             target/verification/https/
           if-no-files-found: ignore
+  assemble:
+    needs: package
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: okf-cli-*
+          path: target/packages
+          merge-multiple: true
+      - name: Assemble and validate release downloads
+        env:
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          args=()
+          if [ -n "$RELEASE_TAG" ]; then args+=(--tag "$RELEASE_TAG"); fi
+          python scripts/assemble_release.py target/packages target/publish --commit "$SOURCE_COMMIT" "${args[@]}"
+          cd target/publish
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-downloads
+          path: target/publish/*
+          if-no-files-found: error
+  verify-skill:
+    needs: assemble
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-downloads
+          path: target/publish
+      - name: Verify bundled Skill on its native platform
+        shell: bash
+        run: python scripts/verify_skill_package.py target/publish/okf-cli-skill-*.zip
   draft:
     if: github.event_name == 'workflow_dispatch' && inputs.create_draft && github.ref_type == 'tag'
-    needs: package
+    needs: verify-skill
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: okf-cli-*
+          name: release-downloads
           path: dist
-          merge-multiple: true
       - name: Create draft release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: gh release create "$RELEASE_TAG" dist/*.zip dist/*.sha256 --draft --verify-tag --title "$RELEASE_TAG" --generate-notes
+        run: gh release create "$RELEASE_TAG" dist/* --draft --verify-tag --title "$RELEASE_TAG" --generate-notes

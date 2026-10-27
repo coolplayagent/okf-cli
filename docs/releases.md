@@ -26,7 +26,7 @@ CLI 源码构建方法见 [README](../README.md#安装与构建)。Python 3.11 �
 
 ### Skill 更名与升级
 
-当前源码将消费 Skill 从 `okf-consume` 更名为 `okf-cli`：源码与新构建包中的路径为 `skills/okf-cli/SKILL.md`，文件 frontmatter 为 `name: okf-cli`。此变更尚未发布；已发布的 `v0.1.0` 及其 tag 重建包仍使用旧名称。CLI 可执行文件仍为 `okf`，知识包绑定和数据库格式不受此改名影响。
+2026-10-27 重建的 `v0.1.0` 将消费 Skill 从 `okf-consume` 更名为 `okf-cli`：源码与新构建包中的路径为 `skills/okf-cli/SKILL.md`，文件 frontmatter 为 `name: okf-cli`，并新增独立 Skill ZIP。此次重建更新了 `v0.1.0` 标签；此前下载的同版本包可能仍使用旧名称，需通过 `build-info` 的来源提交和发行附件哈希区分。CLI 可执行文件仍为 `okf`，知识包绑定和数据库格式不受此改名影响。
 
 从当前源码重新构建并使用新二进制执行：
 
@@ -59,9 +59,23 @@ python scripts/check_delivery.py target/release/okf --tag vVERSION
 
 ## 发布流程
 
+产物组织参考 [relay-knowledge](https://github.com/coolplayagent/relay-knowledge/blob/main/.github/workflows/release.yml) 和 [into-markdown](https://github.com/coolplayagent/into-markdown/blob/main/.github/workflows/platform-modular-release.yml) 的平台包与独立 Skill 汇总方式。本项目继续使用上述三个发行目标和系统依赖基线。
+
+每次构建在三平台验收成功后，额外生成 `release-downloads` 工作流产物，包含三个原有 CLI ZIP、`okf-cli-skill-VERSION.zip`、四份对应的 `.zip.sha256`、`release-set.json` 及 `SHA256SUMS`。汇总拒绝缺失或多余的平台包、校验和错误、文件清单不一致、不同提交、脏源码和 tag 不匹配；分支构建也要求所有包来自同一干净提交。`release-set.json` 记录四个下载包的哈希及来源，`SHA256SUMS` 覆盖其他全部附件。下载后可运行 `sha256sum -c SHA256SUMS`（macOS 使用 `shasum -a 256 -c SHA256SUMS`）。这些校验和用于完整性检查，不是发布者签名。
+
+Agent 用户可将独立 Skill ZIP 解压到技能目录，得到 `okf-cli/SKILL.md` 和 `assets/` 下的 Windows x64、Linux x64、macOS ARM64 二进制，无需先安装 Rust、Python 或将 `okf` 加入 PATH。Skill 按宿主平台选择随包二进制，并保留用户项目工作目录。Unix 解压后若执行位丢失，执行 `chmod +x`；Git 和系统运行库要求与 CLI 包相同。`okf skill install` 仍只安装指令文件，完整离线包应直接解压。
+
+本地汇总已通过平台验收的三个包（输入目录只放 ZIP 及其 `.sha256`，输出目录必须为空）：
+
+```sh
+python scripts/assemble_release.py INPUT_DIR OUTPUT_DIR --commit SOURCE_COMMIT
+```
+
+正式 tag 包追加 `--tag vVERSION`。该步骤验证归档内容与来源，不在汇总主机执行其他架构的程序。汇总后工作流还会在三个原生平台分别运行 `python scripts/verify_skill_package.py SKILL_ZIP`，核对 Skill 内文件哈希、二进制构建信息与内置指令，并在不含编译工具的 PATH 下执行冒烟验收；三平台均通过后才允许创建草稿。
+
 `Package binaries` 工作流在 tag 推送和手动运行时生成三平台产物；tag 构建自动执行上述严格校验。手动运行时选择版本 tag 并启用 `create_draft`，三平台验收通过后才创建带附件的 GitHub Release 草稿。分支运行不能创建草稿。工作流不会覆盖已存在的同名 Release，也不自动发布草稿。
 
-正式发布前检查草稿附件、支持平台、系统依赖和变更说明，再单独发布。仅打包任务具有只读仓库权限；创建草稿的任务单独获得 contents 写权限。
+草稿附件来自汇总验证后的 `release-downloads`。正式发布前检查草稿附件、支持平台、系统依赖和变更说明，再单独发布。打包与汇总任务均使用只读仓库权限；创建草稿的任务单独获得 contents 写权限。
 
 ## 三平台打包实测
 

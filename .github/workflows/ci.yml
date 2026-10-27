@@ -17,6 +17,7 @@ jobs:
         with:
           python-version: '3.13'
       - run: python -m pip install -r scripts/requirements-test.txt
+      - run: python scripts/check_release_assembly.py
       - run: cargo test --workspace --all-targets --locked
       - run: cargo test --workspace --all-targets --release --locked
       - run: cargo build --release -p okf-cli --locked
