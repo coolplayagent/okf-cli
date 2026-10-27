@@ -36,6 +36,6 @@ with tempfile.TemporaryDirectory(prefix='okf-install-') as temporary:
     assert run('search', '认证', '--bundle', 'book', '--full-text')['page']['returned'] == 1
     run('context', '--query', 'executor.resource', '--bundle', 'book', '--content')
     run('skill', 'install', str(root / 'skill'))
-    expected = Path(__file__).resolve().parents[1] / 'skills/okf-consume/SKILL.md'
+    expected = Path(__file__).resolve().parents[1] / 'skills/okf-cli/SKILL.md'
     assert (root / 'skill/SKILL.md').read_bytes() == expected.read_bytes()
 print('Standalone binary smoke passed')

@@ -32,7 +32,7 @@ okf-cli 读取已绑定的 OKF 知识包，为 Agent 提供概览、目录、元
 | `crates/okf-application` | 知识包选择、读取、诊断、同步、检索与上下文选择；定义 `BundleRegistry`、`BundleReader`、`Cache`、`Index` 端口 |
 | `crates/okf-adapters` | 文件系统与 Git 对象读取、TOML 配置、SQLite 观测缓存与独立正文索引 |
 | `apps/okf-cli` | 参数校验、依赖组装、取消信号、JSON 输出、输出上限和退出码 |
-| `skills/okf-consume` | 指导 Agent 调用 CLI、处理覆盖状态和引用原文 |
+| `skills/okf-cli` | 指导 Agent 调用 CLI、处理覆盖状态和引用原文 |
 | `schemas` | 响应 envelope 的 JSON Schema |
 
 ```mermaid
