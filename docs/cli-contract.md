@@ -10,9 +10,9 @@
 | `bundle list` / `bundle show NAME` | 查看知识包绑定配置 |
 | `bundle remove NAME` | 解除绑定，保留知识包文件 |
 | `bundle add NAME --kind git --path REPO --ref REF --bundle-path PATH` | 保存固定 commit 的 Git 知识包 |
-| `bundle add NAME --kind git --url HTTPS_URL [--ref REF]` | 获取公开 HTTPS 仓库；不能同时传入 `--path` |
-| `bundle refresh NAME` | 解析 Git ref 后原子替换提交，失败保留旧绑定 |
-| `bundle cache NAME [--compact]` | 查看托管远端对象占用，或重打包压缩；保留历史对象与引用 |
+| `bundle add NAME --kind git --url HTTPS_URL [--ref REF] [--credential env:VAR\|file:PATH] [--max-fetch-bytes N]` | 获取公开或私有 HTTPS 仓库；不能同时传入 `--path` |
+| `bundle refresh NAME [--max-fetch-bytes N]` | 解析 Git ref 后原子替换提交，失败保留旧绑定 |
+| `bundle cache NAME [--compact] [--gc]` | 查看托管远端对象占用、重打包压缩或显式回收历史对象 |
 | `context [--bundle NAME]` | 返回知识包概览与目录入口 |
 | `context --query QUERY [--bundle NAME]` | 返回元数据候选与原文读取入口 |
 | `browse REF` | 展开一层目录 |
@@ -109,6 +109,12 @@
 `bundle add`、`bundle refresh`、`bundle cache` 支持 `--timeout-ms`，默认 30000。公开 HTTPS 获取支持 `--max-git-bytes`，默认 268435456（256 MiB）。它是托管仓库对象目录的总占用预算，获取前、获取期间约每 50 ms 及获取后检查；可能存在检查间隔内的超量写入，不是精确网络字节上限。超限不发布新绑定，已获取的对象可能保留，后续可调整预算。
 
 同一托管仓库的获取、刷新与压缩通过系统锁互斥。`bundle cache NAME --compact` 仅作用于运行目录内的托管远端仓库，保留历史引用及不可达对象，消除冗余打包占用；不对用户本地仓库执行清理，也不实施历史版本过期删除。
+
+私有 HTTPS 仓库通过 `--credential` 引用凭据，支持 `env:VAR`（从环境变量读取）与 `file:PATH`（从权限 0600 的私有文件读取）。解析后的 token 只注入 Git 子进程环境，绝不写入配置、命令行参数、响应或日志；凭据缺失或非法返回 `GIT_CREDENTIAL_MISSING`（5）。
+
+`--max-fetch-bytes` 承诺单次 fetch 新接收对象的对象字节和（fetch 前后 `cat-file --batch-all-objects` 差集），与采样的 `--max-git-bytes` 存储配额相互独立；超限返回 `GIT_FETCH_LIMIT`（7）并保留旧绑定。它计量对象字节，不含 TLS 与传输开销。
+
+`bundle cache NAME --gc` 显式回收历史与不可达对象：先为所有仍被绑定引用的提交建立临时 pin ref，删除不再指向存活提交的临时 fetch ref，再执行 `git gc --prune=now`。默认不自动过期，清理不影响仍使用的提交。
 
 远端失败使用 `GIT_AUTH_FAILED`、`GIT_TLS_FAILED`、`GIT_REMOTE_NOT_FOUND` 或 `GIT_TRANSPORT_FAILED`，对象占用超限使用 `GIT_STORAGE_LIMIT`（7），写锁竞争使用 `GIT_CACHE_LOCKED`（5）。原始 Git stderr 不进入响应。普通对象缺失仍使用 `GIT_OBJECT_UNAVAILABLE`。网络失败与预算不足均保留旧绑定。
 
