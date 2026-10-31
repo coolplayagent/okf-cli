@@ -171,3 +171,44 @@ fn cache_compaction_keeps_pinned_objects_and_serializes_writers() {
         "GIT_STORAGE_LIMIT"
     );
 }
+
+#[test]
+fn remote_url_validation_accepts_ssh_and_rejects_embedded_credentials() {
+    let source = tempfile::tempdir().unwrap();
+    git(source.path(), &["init", "--initial-branch=main"]);
+    fs::write(
+        source.path().join("note.md"),
+        "---\ntype: Note\n---\nbody\n",
+    )
+    .unwrap();
+    git(source.path(), &["add", "."]);
+    git(source.path(), &["commit", "-m", "first"]);
+    let bare = tempfile::tempdir().unwrap();
+    git(
+        source.path(),
+        &["clone", "--bare", ".", bare.path().to_str().unwrap()],
+    );
+    // Valid HTTPS and SSH remotes pass URL validation and fail later on the
+    // storage limit (never with INVALID_REMOTE).
+    for remote in [
+        "https://github.com/owner/repo.git",
+        "ssh://git@github.com/owner/repo.git",
+        "git@github.com:owner/repo.git",
+    ] {
+        let err =
+            Git::fetch_bounded(bare.path(), remote, "main", None, &control(), 1, None).unwrap_err();
+        assert_ne!(err.code, "INVALID_REMOTE", "{remote}: {err:?}");
+    }
+    // Embedded credentials, non-HTTPS/SSH schemes and control characters are
+    // rejected before any repository work.
+    for remote in [
+        "https://user:token@github.com/owner/repo.git",
+        "file:///tmp/repo",
+        "C:\\path\\repo",
+        "git@github.com:owner/repo.git\nmalicious",
+    ] {
+        let err =
+            Git::fetch_bounded(bare.path(), remote, "main", None, &control(), 1, None).unwrap_err();
+        assert_eq!(err.code, "INVALID_REMOTE", "{remote}");
+    }
+}
