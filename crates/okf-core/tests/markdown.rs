@@ -1,5 +1,5 @@
 use okf_core::{
-    markdown::{resolve_link, LinkTarget, Markdown, MAX_REFERENCES},
+    markdown::{resolve_link, LinkKind, LinkTarget, Markdown, MAX_REFERENCES},
     Document, Severity,
 };
 
@@ -68,11 +68,19 @@ fn markdown_parser_handles_references_and_excludes_code_html_images_and_escapes(
         "nested/note.md",
         Some(&doc.frontmatter),
     );
-    assert_eq!(parsed.links.len(), 3, "{parsed:?}");
+    assert_eq!(parsed.links.len(), 4, "{parsed:?}");
     assert_eq!(
         parsed.links[2].target,
         LinkTarget::Internal {
             path: "nested/a b.md".into(),
+            fragment: None
+        }
+    );
+    assert_eq!(parsed.links[3].kind, LinkKind::Image);
+    assert_eq!(
+        parsed.links[3].target,
+        LinkTarget::Internal {
+            path: "nested/missing.md".into(),
             fragment: None
         }
     );

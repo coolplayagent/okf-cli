@@ -125,7 +125,7 @@ enum Command {
         /// Maximum collected computation resource declarations (metadata queries only).
         #[arg(long, default_value_t = 4096, value_parser = parse_scan)]
         max_resources: usize,
-        /// Check non-Markdown body-link targets using metadata only (images excluded).
+        /// Check non-Markdown body-link targets and images using metadata only.
         #[arg(long)]
         attachments: bool,
         /// Opt in to a deterministic heading-ID profile; custom HTML remains unknown.

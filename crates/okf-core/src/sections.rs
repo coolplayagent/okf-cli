@@ -15,6 +15,7 @@ pub struct Sections {
     pub headings: Vec<Heading>,
     pub complete: bool,
     pub custom_html: bool,
+    pub html_anchors: BTreeSet<String>,
 }
 impl Sections {
     pub fn parse(raw: &str, body_start: usize) -> Self {
@@ -67,7 +68,10 @@ impl Sections {
                         });
                     }
                 }
-                Event::Html(_) | Event::InlineHtml(_) => result.custom_html = true,
+                Event::Html(html) | Event::InlineHtml(html) => {
+                    result.custom_html = true;
+                    collect_html_anchors(&html, &mut result.html_anchors);
+                }
                 _ => {}
             }
         }
@@ -95,13 +99,80 @@ impl Sections {
         let decoded = percent_encoding::percent_decode_str(fragment)
             .decode_utf8()
             .ok()?;
-        if decoded.is_empty() || self.headings.iter().any(|h| h.anchor == decoded) {
+        if decoded.is_empty() {
+            return Some(true);
+        }
+        if self.headings.iter().any(|h| h.anchor == decoded)
+            || self.html_anchors.contains(decoded.as_ref())
+        {
             Some(true)
         } else if self.complete && !self.custom_html {
             Some(false)
         } else {
             None
         }
+    }
+}
+
+/// Extracts `id` and `name` attribute values from raw HTML fragments, so that
+/// explicit HTML anchors can be resolved for the anchor check without a full
+/// HTML parser. Values are matched for quoted and unquoted forms.
+fn collect_html_anchors(html: &str, anchors: &mut BTreeSet<String>) {
+    let mut rest = html;
+    while let Some(pos) = rest.find(['i', 'n']) {
+        let candidate = &rest[pos..];
+        let name_len = if candidate.starts_with("id") {
+            2
+        } else if candidate.starts_with("name") {
+            4
+        } else {
+            rest = &rest[pos + 1..];
+            continue;
+        };
+        // Left boundary: the name must not continue an identifier.
+        if pos > 0 {
+            let prev = rest[..pos].chars().next_back().unwrap();
+            if prev.is_alphanumeric() || matches!(prev, '-' | '_' | ':') {
+                rest = &rest[pos + name_len..];
+                continue;
+            }
+        }
+        // Right boundary: the name must not continue an identifier.
+        let after_name = &candidate[name_len..];
+        if after_name.chars().next().is_some_and(char::is_alphanumeric) {
+            rest = &rest[pos + name_len..];
+            continue;
+        }
+        let mut after = after_name.trim_start();
+        if !after.starts_with('=') {
+            rest = after;
+            continue;
+        }
+        after = after[1..].trim_start();
+        let (value, next) = read_html_attr_value(after);
+        if !value.is_empty() {
+            anchors.insert(value);
+        }
+        rest = next.unwrap_or_default();
+    }
+}
+
+fn read_html_attr_value(after: &str) -> (String, Option<&str>) {
+    if let Some(inner) = after.strip_prefix('"') {
+        match inner.find('"') {
+            Some(end) => (inner[..end].to_owned(), Some(&inner[end + 1..])),
+            None => (String::new(), None),
+        }
+    } else if let Some(inner) = after.strip_prefix('\'') {
+        match inner.find('\'') {
+            Some(end) => (inner[..end].to_owned(), Some(&inner[end + 1..])),
+            None => (String::new(), None),
+        }
+    } else {
+        let end = after
+            .find(|c: char| c.is_whitespace() || c == '>')
+            .unwrap_or(after.len());
+        (after[..end].to_owned(), Some(&after[end..]))
     }
 }
 
@@ -121,6 +192,18 @@ mod tests {
         assert_eq!(sections.contains_anchor("fake"), Some(false));
         assert_eq!(
             Sections::parse("# A\n<a id='custom'></a>", 0).contains_anchor("custom"),
+            Some(true)
+        );
+        assert_eq!(
+            Sections::parse("# A\n<a name='legacy'></a>", 0).contains_anchor("legacy"),
+            Some(true)
+        );
+        assert_eq!(
+            Sections::parse("# A\n<div id=\"pane\">", 0).contains_anchor("pane"),
+            Some(true)
+        );
+        assert_eq!(
+            Sections::parse("# A\n<a id='custom'></a>", 0).contains_anchor("missing"),
             None
         );
     }

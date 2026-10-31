@@ -1,7 +1,7 @@
 //! Direct, evidenced relationships from one published index generation.
 use crate::{App, Index, ReadOptions, Response};
 use okf_core::{
-    markdown::{resolve_link, LinkTarget, Markdown},
+    markdown::{resolve_link, LinkKind, LinkTarget, Markdown},
     Document, Error, Result,
 };
 use serde_json::json;
@@ -90,7 +90,7 @@ impl App<'_> {
                     fragment,
                 } = link.target
                 {
-                    if !link.directory && target.ends_with(".md") {
+                    if link.kind == LinkKind::Link && !link.directory && target.ends_with(".md") {
                         edges.push((target, json!({"kind":"markdown_link","destination":link.destination,"fragment":fragment,"location":link.location})));
                     }
                 }

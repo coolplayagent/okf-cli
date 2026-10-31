@@ -1546,7 +1546,7 @@ fn indexed_neighbors_report_evidence_cycles_missing_targets_and_limits() {
 }
 
 #[test]
-fn attachment_and_anchor_checks_are_opt_in_and_custom_html_is_inconclusive() {
+fn attachment_and_anchor_checks_are_opt_in_and_custom_html_resolves() {
     let f = Fixture::new();
     f.bind();
     fs::write(f.work.path().join("knowledge/links.md"),"---\ntype: Note\n---\n# 中文\n# 中文\n[valid](#%E4%B8%AD%E6%96%87-1) [bad](#absent) [file](asset.bin) [missing](missing.bin) [custom](custom.md#custom)\n").unwrap();
@@ -1569,7 +1569,7 @@ fn attachment_and_anchor_checks_are_opt_in_and_custom_html_is_inconclusive() {
     let response = value(&output);
     assert_eq!(response["data"]["attachment_check"]["complete"], true);
     assert_eq!(response["data"]["attachment_check"]["checked"], 2);
-    assert_eq!(response["data"]["anchor_check"]["skipped"], 1);
+    assert_eq!(response["data"]["anchor_check"]["skipped"], 0);
     let diagnostics = response["diagnostics"].as_array().unwrap();
     assert_eq!(
         diagnostics
@@ -1589,5 +1589,34 @@ fn attachment_and_anchor_checks_are_opt_in_and_custom_html_is_inconclusive() {
         value(&f.run(&["validate", "book", "--attachments", "--max-scan", "1"]))["data"]
             ["attachment_check"]["complete"],
         false
+    );
+}
+
+#[test]
+fn image_references_are_checked_when_attachments_are_enabled() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(
+        f.work.path().join("knowledge/images.md"),
+        "---\ntype: Note\n---\n![ok](present.png) ![missing](gone.png)\n",
+    )
+    .unwrap();
+    fs::write(f.work.path().join("knowledge/present.png"), [0, 255, 128]).unwrap();
+    let plain = value(&f.run(&["validate", "book"]));
+    assert!(plain["data"]["attachment_check"].is_null());
+    let response = value(&f.run(&["validate", "book", "--attachments"]));
+    assert_eq!(
+        response["data"]["attachment_check"]["images_included"],
+        true
+    );
+    assert_eq!(response["data"]["attachment_check"]["images_checked"], 2);
+    assert_eq!(
+        response["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|d| d["code"] == "MISSING_IMAGE")
+            .count(),
+        1
     );
 }
