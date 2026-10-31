@@ -10,7 +10,7 @@
 | `bundle list` / `bundle show NAME` | 查看知识包绑定配置 |
 | `bundle remove NAME` | 解除绑定，保留知识包文件 |
 | `bundle add NAME --kind git --path REPO --ref REF --bundle-path PATH` | 保存固定 commit 的 Git 知识包 |
-| `bundle add NAME --kind git --url HTTPS_URL [--ref REF] [--credential env:VAR\|file:PATH] [--max-fetch-bytes N]` | 获取公开或私有 HTTPS 仓库；不能同时传入 `--path` |
+| `bundle add NAME --kind git --url URL [--ref REF] [--credential env:VAR\|file:PATH] [--max-fetch-bytes N]` | 获取公开或私有 HTTPS/SSH 仓库；不能同时传入 `--path` |
 | `bundle refresh NAME [--max-fetch-bytes N]` | 解析 Git ref 后原子替换提交，失败保留旧绑定 |
 | `bundle cache NAME [--compact] [--gc]` | 查看托管远端对象占用、重打包压缩或显式回收历史对象 |
 | `context [--bundle NAME]` | 返回知识包概览与目录入口 |
@@ -111,6 +111,8 @@
 同一托管仓库的获取、刷新与压缩通过系统锁互斥。`bundle cache NAME --compact` 仅作用于运行目录内的托管远端仓库，保留历史引用及不可达对象，消除冗余打包占用；不对用户本地仓库执行清理，也不实施历史版本过期删除。
 
 私有 HTTPS 仓库通过 `--credential` 引用凭据，支持 `env:VAR`（从环境变量读取）与 `file:PATH`（从权限 0600 的私有文件读取）。解析后的 token 只注入 Git 子进程环境，绝不写入配置、命令行参数、响应或日志；凭据缺失或非法返回 `GIT_CREDENTIAL_MISSING`（5）。
+
+SSH 仓库通过 `ssh://` 或 `user@host:path` 形式的 `--url` 获取，鉴权由系统 Git 与用户 `~/.ssh/config`（SSH 密钥、代理）处理；`--credential` 仅适用于 HTTPS。
 
 `--max-fetch-bytes` 承诺单次 fetch 新接收对象的对象字节和（fetch 前后 `cat-file --batch-all-objects` 差集），与采样的 `--max-git-bytes` 存储配额相互独立；超限返回 `GIT_FETCH_LIMIT`（7）并保留旧绑定。它计量对象字节，不含 TLS 与传输开销。
 

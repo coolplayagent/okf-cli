@@ -70,6 +70,8 @@ fn command(root: &Path) -> Command {
             "-c",
             "protocol.https.allow=always",
             "-c",
+            "protocol.ssh.allow=always",
+            "-c",
             "protocol.file.allow=never",
             "-c",
             "protocol.version=2",
@@ -606,13 +608,19 @@ impl Git {
         max_bytes: u64,
         max_fetch_bytes: Option<u64>,
     ) -> Result<String> {
-        if !remote.starts_with("https://")
-            || remote[8..].contains('@')
-            || remote.contains(['\n', '\r', '?', '#'])
+        let https = remote.starts_with("https://");
+        let ssh = remote.starts_with("ssh://");
+        let scp = !remote.contains("://")
+            && remote.contains('@')
+            && remote.contains(':')
+            && !remote.starts_with(['@', ':']);
+        if remote.contains(['\n', '\r', '?', '#'])
+            || !(https || ssh || scp)
+            || (https && remote[8..].contains('@'))
         {
             return Err(Error::new(
                 "INVALID_REMOTE",
-                "remote must be an HTTPS URL without embedded credentials, query or fragment",
+                "remote must be an HTTPS or SSH URL (https://, ssh://, or user@host:path) without embedded credentials, query or fragment",
                 2,
             ));
         }
