@@ -4,7 +4,8 @@ use crate::{
 };
 use chrono::{DateTime, Utc};
 use okf_core::markdown::{
-    body_truncation_warning, body_warning, BodyLink, LinkTarget, Markdown, MAX_BODY_WARNINGS,
+    body_truncation_warning, body_warning, BodyLink, LinkKind, LinkTarget, Markdown,
+    MAX_BODY_WARNINGS,
 };
 use okf_core::{
     decode_cursor, encode_cursor, logical_path, prefix_end, reserved, sha256, validate_reserved,
@@ -632,9 +633,11 @@ impl App<'_> {
         let mut anchors_complete = true;
         let mut anchors_limited = false;
         let mut attachments_complete = true;
+        let mut images_complete = true;
         let mut anchors_checked = 0;
         let mut anchors_skipped = 0;
         let mut attachments_checked = 0;
+        let mut images_checked = 0;
         'scan: while let Some(directory) = queue.pop_front() {
             let listing = match self.reader.list(&binding, &directory, &mut scan) {
                 Ok(listing) => listing,
@@ -819,6 +822,24 @@ impl App<'_> {
                                 }
                             }
                         }
+                    } else if link.kind == LinkKind::Image {
+                        images_checked += 1;
+                        match self.reader.stat(&binding, target, self.control) {
+                            Ok(Some(meta)) if !meta.directory => {}
+                            Ok(_) => {
+                                finding = Some((
+                                    "MISSING_IMAGE",
+                                    format!("image missing or not a file: {}", link.destination),
+                                ))
+                            }
+                            Err(error) => {
+                                images_complete = false;
+                                response.issue(&error, &format!("@{}/{}", binding.name, path));
+                                if interrupted(&error) {
+                                    break;
+                                }
+                            }
+                        }
                     } else if attachments {
                         attachments_checked += 1;
                         match self.reader.stat(&binding, target, self.control) {
@@ -879,7 +900,7 @@ impl App<'_> {
             response.data["anchor_check"] = json!({"profile":"headings-v1","complete":checks_complete && anchors_complete,"checked":anchors_checked,"skipped":anchors_skipped});
         }
         if attachments {
-            response.data["attachment_check"] = json!({"scope":"bundle_body_links","complete":checks_complete && attachments_complete,"checked":attachments_checked,"images_included":false});
+            response.data["attachment_check"] = json!({"scope":"bundle_body_links","complete":checks_complete && attachments_complete && images_complete,"checked":attachments_checked,"images_included":true,"images_checked":images_checked});
         }
         response.data["failures"] = json!(failures);
         if let Err(error) = self.control.check() {

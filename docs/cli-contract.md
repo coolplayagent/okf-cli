@@ -100,9 +100,9 @@
 
 每个结果包含 `from`、`to`、方向、目标是否存在，以及证据文件哈希和正文 `location` 或元数据 `field`。缺失目标仍保留，循环关系只报告直接边。`--limit`、`--budget-bytes`、`--max-scan`、`--timeout-ms` 默认值与搜索一致；扫描预算计索引文档数，单文档正文链接与来源各最多 256 条。`relationship_check.complete` 描述关系扫描，结果选择不足另报 `RESULT_LIMIT`；扫描或引用截断时不能把没有入链解释成全包没有引用。
 
-`validate --attachments` 用元信息查询检查非 Markdown 正文链接的存在性与文件类型，不读取附件内容，不检查图片。结果独立返回 `attachment_check`；与正文链接共用数量和字符串预算。
+`validate --attachments` 用元信息查询检查非 Markdown 正文链接与图片引用的存在性和文件类型，不读取附件内容。结果独立返回 `attachment_check`，其中 `images_included` 恒为 `true`、`images_checked` 统计图片引用数量；与正文链接共用数量和字符串预算。
 
-`validate --anchor-style headings-v1` 显式启用标题锚点规则：提取 Markdown 标题文字与行内代码，转小写，空白替换为 `-`，保留字母、数字、`_`、`-`，重复 ID 顺序追加 `-1` 等后缀。解析 URL 百分号编码后匹配。该规则是 CLI 扩展，不代表所有渲染器；默认不检查锚点。存在自定义 HTML、无法解码的片段或不完整标题清单时，将无法确定的目标计入 `anchor_check.skipped`，不产生缺失锚点误报。每文件最多 4096 个标题，包内标题清单总估算占用最多 2 MiB；超限或扫描中断分别报告覆盖。
+`validate --anchor-style headings-v1` 显式启用标题锚点规则：提取 Markdown 标题文字与行内代码，转小写，空白替换为 `-`，保留字母、数字、`_`、`-`，重复 ID 顺序追加 `-1` 等后缀。解析 URL 百分号编码后匹配。此外，从原始 HTML 中提取 `id` 与 `name` 属性值作为显式锚点一并匹配。该规则是 CLI 扩展，不代表所有渲染器；默认不检查锚点。存在无法识别的自定义 HTML、无法解码的片段或不完整标题清单时，将无法确定的目标计入 `anchor_check.skipped`，不产生缺失锚点误报。每文件最多 4096 个标题，包内标题清单总估算占用最多 2 MiB；超限或扫描中断分别报告覆盖。
 
 ## Git 远端与缓存
 

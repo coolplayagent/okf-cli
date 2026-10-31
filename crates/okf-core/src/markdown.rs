@@ -17,6 +17,12 @@ pub enum LinkTarget {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkKind {
+    Link,
+    Image,
+}
+
 /// Resolve Markdown paths separately from CLI paths: ../ is valid inside a bundle.
 pub fn resolve_link(document: &str, destination: &str) -> Result<LinkTarget> {
     resolve_destination(document, destination).map(|(target, _)| target)
@@ -96,6 +102,7 @@ pub struct BodyLink {
     pub target: LinkTarget,
     pub directory: bool,
     pub location: ByteRange,
+    pub kind: LinkKind,
 }
 
 impl BodyLink {
@@ -204,7 +211,32 @@ impl Markdown {
             match event {
                 Event::Start(Tag::CodeBlock(_)) => code_block = true,
                 Event::End(TagEnd::CodeBlock) => code_block = false,
-                Event::Start(Tag::Image { .. }) => image_depth += 1,
+                Event::Start(Tag::Image { dest_url, .. }) => {
+                    image_depth += 1;
+                    if link_count < MAX_REFERENCES {
+                        link_count += 1;
+                        let location = byte_range(range, body_start);
+                        match resolve_destination(document, &dest_url) {
+                            Ok((target, directory)) => {
+                                result.links.push(BodyLink {
+                                    destination: dest_url.into_string(),
+                                    target,
+                                    directory,
+                                    location,
+                                    kind: LinkKind::Image,
+                                });
+                            }
+                            Err(error) => result.warn(body_warning(
+                                &error.code,
+                                error.message,
+                                document,
+                                location,
+                            )),
+                        }
+                    } else {
+                        result.truncated = true;
+                    }
+                }
                 Event::End(TagEnd::Image) => image_depth -= 1,
                 _ if image_depth > 0 => {}
                 Event::Start(Tag::Link { dest_url, .. }) => {
@@ -221,6 +253,7 @@ impl Markdown {
                                 target,
                                 directory,
                                 location,
+                                kind: LinkKind::Link,
                             });
                         }
                         Err(error) => result.warn(body_warning(

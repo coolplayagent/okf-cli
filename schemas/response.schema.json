@@ -115,6 +115,7 @@
             "scope",
             "checked",
             "images_included",
+            "images_checked",
             "complete"
           ],
           "properties": {
@@ -126,7 +127,11 @@
               "minimum": 0
             },
             "images_included": {
-              "const": false
+              "const": true
+            },
+            "images_checked": {
+              "type": "integer",
+              "minimum": 0
             },
             "complete": {
               "type": "boolean"
