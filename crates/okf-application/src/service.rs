@@ -638,6 +638,7 @@ impl App<'_> {
         let mut anchors_skipped = 0;
         let mut attachments_checked = 0;
         let mut images_checked = 0;
+        let mut external_links = 0;
         'scan: while let Some(directory) = queue.pop_front() {
             let listing = match self.reader.list(&binding, &directory, &mut scan) {
                 Ok(listing) => listing,
@@ -724,6 +725,10 @@ impl App<'_> {
                                     if link.bundle_path().is_some() || attachments =>
                                 {
                                     (path, fragment)
+                                }
+                                LinkTarget::External => {
+                                    external_links += 1;
+                                    continue;
                                 }
                                 _ => continue,
                             };
@@ -915,7 +920,8 @@ impl App<'_> {
             "anchor_bytes_limit": MAX_VALIDATION_LINK_BYTES, "anchor_bytes_used":section_bytes});
         response.data["link_check"] = json!({
             "scope": "bundle_markdown_targets",
-            "complete": complete && failures == 0 && !links_truncated && !body_warnings.values().any(|state| state.truncated)
+            "complete": complete && failures == 0 && !links_truncated && !body_warnings.values().any(|state| state.truncated),
+            "external_links": external_links
         });
         resources.check(
             &binding,
