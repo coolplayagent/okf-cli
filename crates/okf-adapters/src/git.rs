@@ -1,11 +1,11 @@
 //! Read immutable Git objects. No checkout, filters, hooks, LFS or submodules.
 use okf_application::{
-    BundleBinding, BundleReader, Entry, GitRevision, Listing, RequestControl, ResourceMetadata,
-    ScanBudget,
+    BundleBinding, BundleReader, CredentialRef, Entry, GitRevision, Listing, RequestControl,
+    ResourceMetadata, ScanBudget,
 };
 use okf_core::{logical_path, Error, Result};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, HashMap},
     io::Read,
     path::Path,
     process::{Command, Stdio},
@@ -121,7 +121,7 @@ fn stop(child: &mut std::process::Child) {
 }
 
 fn run(root: &Path, args: &[&str], max: usize, control: &RequestControl) -> Result<Vec<u8>> {
-    run_bounded(root, args, max, control, None)
+    run_bounded(root, args, max, control, None, None)
 }
 
 fn run_bounded(
@@ -130,24 +130,32 @@ fn run_bounded(
     max: usize,
     control: &RequestControl,
     storage_limit: Option<u64>,
+    credential: Option<&str>,
 ) -> Result<Vec<u8>> {
     control.check()?;
     if let Some(limit) = storage_limit {
         check_storage(root, limit, control)?;
     }
-    let mut child = command(root)
-        .args(args)
+    let mut cmd = command(root);
+    cmd.args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            Error::new(
-                "GIT_UNAVAILABLE",
-                format!("cannot start Git: {e}; install Git or set OKF_GIT"),
-                5,
-            )
-        })?;
+        .stderr(Stdio::piped());
+    if let Some(token) = credential {
+        cmd.env("GIT_CONFIG_COUNT", "1")
+            .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+            .env(
+                "GIT_CONFIG_VALUE_0",
+                format!("Authorization: Bearer {token}"),
+            );
+    }
+    let mut child = cmd.spawn().map_err(|e| {
+        Error::new(
+            "GIT_UNAVAILABLE",
+            format!("cannot start Git: {e}; install Git or set OKF_GIT"),
+            5,
+        )
+    })?;
     let overflow = Arc::new(AtomicBool::new(false));
     fn collect(
         mut input: impl Read,
@@ -354,6 +362,99 @@ fn text(bytes: Vec<u8>) -> Result<String> {
         .map_err(|_| Error::new("INVALID_OKF", "Git object or path is not UTF-8", 1))
 }
 
+/// Resolve a credential reference into a bearer token. The token is returned to
+/// the caller and injected only into the child-process environment; it must
+/// never be written to configuration, responses, argv or logs.
+fn resolve_credential(credential: &CredentialRef) -> Result<String> {
+    let token = match credential {
+        CredentialRef::Env { var } => {
+            let value = std::env::var(var).map_err(|_| {
+                Error::new(
+                    "GIT_CREDENTIAL_MISSING",
+                    format!("credential environment variable `{var}` is not set"),
+                    5,
+                )
+            })?;
+            if value.is_empty() {
+                return Err(Error::new(
+                    "GIT_CREDENTIAL_MISSING",
+                    format!("credential environment variable `{var}` is empty"),
+                    5,
+                ));
+            }
+            value
+        }
+        CredentialRef::File { path } => {
+            let metadata = std::fs::metadata(path).map_err(Error::io)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if metadata.permissions().mode() & 0o077 != 0 {
+                    return Err(Error::new(
+                        "GIT_CREDENTIAL_MISSING",
+                        format!("credential file `{path}` must be private (0600)"),
+                        5,
+                    ));
+                }
+            }
+            let value = std::fs::read_to_string(path).map_err(Error::io)?;
+            let value = value.trim().to_owned();
+            if value.is_empty() {
+                return Err(Error::new(
+                    "GIT_CREDENTIAL_MISSING",
+                    format!("credential file `{path}` is empty"),
+                    5,
+                ));
+            }
+            value
+        }
+    };
+    if token.chars().any(char::is_control) {
+        return Err(Error::new(
+            "GIT_CREDENTIAL_MISSING",
+            "credential contains control characters",
+            5,
+        ));
+    }
+    Ok(token)
+}
+
+/// Enumerate every object in the repository with its exact object size. This is
+/// the precise accounting basis for `--max-fetch-bytes` (object bytes, not wire
+/// bytes), distinct from the sampled disk-occupancy quota in `check_storage`.
+fn object_inventory(root: &Path, control: &RequestControl) -> Result<HashMap<String, u64>> {
+    let data = run(
+        root,
+        &[
+            "cat-file",
+            "--batch-all-objects",
+            "--batch-check=%(objectname) %(objectsize)",
+        ],
+        64 * 1024 * 1024,
+        control,
+    )?;
+    let mut inventory = HashMap::new();
+    for line in String::from_utf8_lossy(&data).lines() {
+        let mut fields = line.split_whitespace();
+        if let (Some(oid), Some(size)) = (fields.next(), fields.next()) {
+            if let Ok(size) = size.parse::<u64>() {
+                inventory.insert(oid.to_owned(), size);
+            }
+        }
+    }
+    Ok(inventory)
+}
+
+/// Sum the object sizes present in `after` but absent from `before`, i.e. the
+/// precise object-byte count received by a single fetch.
+fn received_object_bytes(before: &HashMap<String, u64>, after: &HashMap<String, u64>) -> u64 {
+    after
+        .iter()
+        .filter(|(oid, _)| !before.contains_key(*oid))
+        .map(|(_, size)| size)
+        .sum()
+}
+
 impl Git {
     pub fn pin(
         root: &Path,
@@ -393,6 +494,7 @@ impl Git {
             commit,
             bundle_path: bundle_path.into(),
             remote: None,
+            credential: None,
         };
         let b = BundleBinding {
             id: String::new(),
@@ -499,8 +601,10 @@ impl Git {
         root: &Path,
         remote: &str,
         reference: &str,
+        credential: Option<&CredentialRef>,
         control: &RequestControl,
         max_bytes: u64,
+        max_fetch_bytes: Option<u64>,
     ) -> Result<String> {
         if !remote.starts_with("https://")
             || remote[8..].contains('@')
@@ -518,6 +622,12 @@ impl Git {
         {
             return Err(Error::new("INVALID_REFERENCE", "invalid Git ref", 2));
         }
+        let before = if max_fetch_bytes.is_some() {
+            Some(object_inventory(root, control)?)
+        } else {
+            None
+        };
+        let cred_token = credential.map(resolve_credential).transpose()?;
         let token = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(Error::io)?
@@ -537,7 +647,21 @@ impl Git {
             65536,
             control,
             Some(max_bytes),
+            cred_token.as_deref(),
         )?;
+        if let (Some(limit), Some(before)) = (max_fetch_bytes, before) {
+            let after = object_inventory(root, control)?;
+            let received = received_object_bytes(&before, &after);
+            if received > limit {
+                return Err(Error::new(
+                    "GIT_FETCH_LIMIT",
+                    format!(
+                        "fetch received {received} object bytes, exceeding --max-fetch-bytes {limit}; existing binding retained"
+                    ),
+                    7,
+                ));
+            }
+        }
         Ok(destination)
     }
     pub fn init(root: &Path, control: &RequestControl) -> Result<()> {
@@ -581,6 +705,72 @@ impl Git {
         Ok(
             serde_json::json!({"before_bytes":before,"object_bytes":after,"compacted":compact,"historical_objects_retained":true}),
         )
+    }
+
+    /// Prune historical and unreachable objects while preserving every commit
+    /// still referenced by a live binding. Transient fetch refs for non-live
+    /// commits are dropped first; live commits are pinned for the prune.
+    pub fn gc(
+        root: &Path,
+        live_commits: &[String],
+        control: &RequestControl,
+    ) -> Result<serde_json::Value> {
+        let _guard = Self::lock(root)?;
+        let before = check_storage(root, u64::MAX, control)?;
+        let live: std::collections::HashSet<&str> =
+            live_commits.iter().map(String::as_str).collect();
+        let is_oid =
+            |s: &str| matches!(s.len(), 40 | 64) && s.bytes().all(|b| b.is_ascii_hexdigit());
+        // Pin every live commit so pruning can never remove a bound revision.
+        for commit in live_commits {
+            if is_oid(commit) {
+                let _ = run(
+                    root,
+                    &["update-ref", &format!("refs/okf/pinned/{commit}"), commit],
+                    65536,
+                    control,
+                );
+            }
+        }
+        // Drop transient fetch refs that no longer point at a live commit.
+        if let Ok(data) = run(
+            root,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/okf/fetch",
+            ],
+            8 * 1024 * 1024,
+            control,
+        ) {
+            for line in String::from_utf8_lossy(&data).lines() {
+                let mut fields = line.split_whitespace();
+                if let (Some(refname), Some(oid)) = (fields.next(), fields.next()) {
+                    if !live.contains(oid) {
+                        let _ = run(root, &["update-ref", "-d", refname], 65536, control);
+                    }
+                }
+            }
+        }
+        run(root, &["gc", "--prune=now", "--quiet"], 65536, control)?;
+        // Drop the temporary pins; live commits stay reachable via retained refs.
+        for commit in live_commits {
+            if is_oid(commit) {
+                let _ = run(
+                    root,
+                    &["update-ref", "-d", &format!("refs/okf/pinned/{commit}")],
+                    65536,
+                    control,
+                );
+            }
+        }
+        let after = check_storage(root, u64::MAX, control)?;
+        Ok(serde_json::json!({
+            "before_bytes": before,
+            "object_bytes": after,
+            "reclaimed_bytes": before.saturating_sub(after),
+            "gc": true,
+        }))
     }
 }
 
@@ -823,5 +1013,79 @@ mod tests {
             assert!(child.try_wait().unwrap().is_some());
             assert_eq!(dir.path().join("shallow.lock").exists(), !cooperative);
         }
+    }
+
+    #[test]
+    fn received_object_bytes_sums_only_new_objects() {
+        let mut before = HashMap::new();
+        before.insert("a".into(), 10);
+        before.insert("b".into(), 20);
+        let mut after = before.clone();
+        after.insert("c".into(), 30);
+        after.insert("d".into(), 40);
+        assert_eq!(received_object_bytes(&before, &after), 70);
+        assert_eq!(received_object_bytes(&before, &before), 0);
+    }
+
+    #[test]
+    fn resolve_credential_reads_env() {
+        unsafe { std::env::set_var("OKF_TEST_CREDENTIAL", "env-token") };
+        let cred = CredentialRef::Env {
+            var: "OKF_TEST_CREDENTIAL".into(),
+        };
+        assert_eq!(resolve_credential(&cred).unwrap(), "env-token");
+        unsafe { std::env::remove_var("OKF_TEST_CREDENTIAL") };
+    }
+
+    #[test]
+    fn resolve_credential_reads_private_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "secret-token\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let cred = CredentialRef::File {
+            path: file.to_string_lossy().into_owned(),
+        };
+        assert_eq!(resolve_credential(&cred).unwrap(), "secret-token");
+    }
+
+    #[test]
+    fn resolve_credential_rejects_control_characters() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "bad\nvalue").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let cred = CredentialRef::File {
+            path: file.to_string_lossy().into_owned(),
+        };
+        assert_eq!(
+            resolve_credential(&cred).unwrap_err().code,
+            "GIT_CREDENTIAL_MISSING"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_credential_rejects_world_readable_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("token");
+        std::fs::write(&file, "secret").unwrap();
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let cred = CredentialRef::File {
+            path: file.to_string_lossy().into_owned(),
+        };
+        assert_eq!(
+            resolve_credential(&cred).unwrap_err().code,
+            "GIT_CREDENTIAL_MISSING"
+        );
     }
 }

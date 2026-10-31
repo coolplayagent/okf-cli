@@ -161,8 +161,10 @@ fn cache_compaction_keeps_pinned_objects_and_serializes_writers() {
             bare.path(),
             "https://localhost:1/unreachable",
             "main",
+            None,
             &control(),
-            1
+            1,
+            None
         )
         .unwrap_err()
         .code,

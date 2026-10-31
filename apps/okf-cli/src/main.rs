@@ -1,8 +1,8 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use okf_adapters::{default_home, ConfigRegistry, Git, Readers, SqliteCache, SqliteIndex};
 use okf_application::{
-    App, BundleBinding, BundleReader, BundleRegistry, Cache, Index, ReadOptions, RequestControl,
-    Response, UnavailableCache,
+    App, BundleBinding, BundleReader, BundleRegistry, Cache, CredentialRef, Index, ReadOptions,
+    RequestControl, Response, UnavailableCache,
 };
 use okf_core::{sha256, Diagnostic, Error, Result};
 use serde_json::json;
@@ -178,6 +178,12 @@ enum BundleCommand {
         /// Sampled object-cache byte budget for public HTTPS fetches.
         #[arg(long)]
         max_git_bytes: Option<u64>,
+        /// Precise received-object byte limit for a single fetch.
+        #[arg(long)]
+        max_fetch_bytes: Option<u64>,
+        /// Private-repository credential reference: `env:VAR` or `file:PATH`.
+        #[arg(long)]
+        credential: Option<String>,
         #[command(flatten)]
         work: WorkArgs,
     },
@@ -193,6 +199,8 @@ enum BundleCommand {
         name: String,
         #[arg(long, default_value_t = 268435456)]
         max_git_bytes: u64,
+        #[arg(long)]
+        max_fetch_bytes: Option<u64>,
         #[command(flatten)]
         work: WorkArgs,
     },
@@ -201,6 +209,8 @@ enum BundleCommand {
         name: String,
         #[arg(long)]
         compact: bool,
+        #[arg(long)]
+        gc: bool,
         #[command(flatten)]
         work: WorkArgs,
     },
@@ -450,6 +460,28 @@ fn parse_scan(value: &str) -> std::result::Result<usize, String> {
     parse_range(value, 1, 100_000)
 }
 
+// Parse a private-repository credential reference. Only `env:VAR` and
+// `file:PATH` are supported; the secret itself is never embedded here.
+fn parse_credential(value: &str) -> std::result::Result<CredentialRef, String> {
+    if let Some(var) = value.strip_prefix("env:") {
+        if var.is_empty() {
+            return Err("credential env:VAR requires a non-empty variable name".into());
+        }
+        Ok(CredentialRef::Env {
+            var: var.to_owned(),
+        })
+    } else if let Some(path) = value.strip_prefix("file:") {
+        if path.is_empty() {
+            return Err("credential file:PATH requires a non-empty path".into());
+        }
+        Ok(CredentialRef::File {
+            path: path.to_owned(),
+        })
+    } else {
+        Err("credential must be `env:VAR` or `file:PATH`".into())
+    }
+}
+
 // Clap can reject the request before Cli exists. Honor a valid output limit
 // even on that path, taking the smallest limit if arguments are duplicated.
 fn argument_output_limit(args: &[String]) -> usize {
@@ -575,6 +607,8 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 reference,
                 bundle_path,
                 max_git_bytes,
+                max_fetch_bytes,
+                credential,
                 work: _,
             } => {
                 if name.is_empty()
@@ -602,11 +636,20 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     && (url.is_some()
                         || reference.is_some()
                         || bundle_path.is_some()
-                        || max_git_bytes.is_some())
+                        || max_git_bytes.is_some()
+                        || max_fetch_bytes.is_some()
+                        || credential.is_some())
                 {
                     return Err(Error::new(
                         "INVALID_ARGUMENT",
                         "--url, --ref and --bundle-path require --kind git",
+                        2,
+                    ));
+                }
+                if credential.is_some() && url.is_none() {
+                    return Err(Error::new(
+                        "INVALID_ARGUMENT",
+                        "--credential requires --kind git --url",
                         2,
                     ));
                 }
@@ -647,6 +690,11 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 } else {
                     None
                 };
+                let credential_ref = credential
+                    .as_deref()
+                    .map(parse_credential)
+                    .transpose()
+                    .map_err(|e| Error::new("INVALID_ARGUMENT", e, 2))?;
                 if kind == "git" {
                     let requested = reference.as_deref().unwrap_or("HEAD");
                     let fetched = url
@@ -656,8 +704,10 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                                 &root,
                                 url,
                                 requested,
+                                credential_ref.as_ref(),
                                 control,
                                 max_git_bytes.unwrap_or(268435456),
+                                *max_fetch_bytes,
                             )
                         })
                         .transpose()?;
@@ -669,6 +719,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     )?;
                     revision.reference = requested.into();
                     revision.remote = url.clone();
+                    revision.credential = credential_ref;
                     binding.git = Some(revision);
                 }
                 reader.probe_controlled(&binding, control)?;
@@ -695,7 +746,9 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     json!({"removed": name, "bundle_content_deleted": false}),
                 ))
             }
-            BundleCommand::Cache { name, compact, .. } => {
+            BundleCommand::Cache {
+                name, compact, gc, ..
+            } => {
                 let binding = app.binding(name)?;
                 if binding
                     .git
@@ -718,14 +771,28 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                         2,
                     ));
                 }
-                Ok(Response::new(
-                    "bundle cache",
-                    Git::cache(&root, *compact, control)?,
-                ))
+                if *gc {
+                    let live_commits: Vec<String> = registry
+                        .list()?
+                        .iter()
+                        .filter(|b| b.root == binding.root)
+                        .filter_map(|b| b.git.as_ref().map(|g| g.commit.clone()))
+                        .collect();
+                    Ok(Response::new(
+                        "bundle cache",
+                        Git::gc(&root, &live_commits, control)?,
+                    ))
+                } else {
+                    Ok(Response::new(
+                        "bundle cache",
+                        Git::cache(&root, *compact, control)?,
+                    ))
+                }
             }
             BundleCommand::Refresh {
                 name,
                 max_git_bytes,
+                max_fetch_bytes,
                 ..
             } => {
                 let old = app.binding(name)?;
@@ -750,7 +817,15 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                     .remote
                     .as_ref()
                     .map(|url| {
-                        Git::fetch_bounded(root, url, &git.reference, control, *max_git_bytes)
+                        Git::fetch_bounded(
+                            root,
+                            url,
+                            &git.reference,
+                            git.credential.as_ref(),
+                            control,
+                            *max_git_bytes,
+                            *max_fetch_bytes,
+                        )
                     })
                     .transpose()?;
                 let mut revision = Git::pin(
@@ -761,6 +836,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 )?;
                 revision.reference = git.reference.clone();
                 revision.remote = git.remote.clone();
+                revision.credential = git.credential.clone();
                 let mut updated = old.clone();
                 updated.git = Some(revision);
                 registry.replace(&old, &updated)?;

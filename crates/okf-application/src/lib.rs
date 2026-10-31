@@ -33,6 +33,18 @@ pub struct BundleBinding {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<GitRevision>,
 }
+/// A credential reference, not the secret itself. The resolved token is only
+/// ever injected into the Git child-process environment and never serialized
+/// into configuration, responses, command-line arguments or logs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase", tag = "kind")]
+pub enum CredentialRef {
+    /// Read the token from an environment variable at fetch time.
+    Env { var: String },
+    /// Read the token from a file with restrictive permissions (0600 on Unix).
+    File { path: String },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GitRevision {
     pub reference: String,
@@ -40,6 +52,8 @@ pub struct GitRevision {
     pub bundle_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential: Option<CredentialRef>,
 }
 impl BundleBinding {
     /// Configuration changes must not expose historical cards from another root.
