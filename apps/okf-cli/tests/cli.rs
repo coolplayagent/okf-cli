@@ -1620,3 +1620,21 @@ fn image_references_are_checked_when_attachments_are_enabled() {
         1
     );
 }
+
+#[test]
+fn external_links_are_reported_without_fetching() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(
+        f.work.path().join("knowledge/links.md"),
+        "---\ntype: Note\n---\n[site](https://example.com/a) [other](http://x.test/b) [local](local.md)\n",
+    )
+    .unwrap();
+    fs::write(
+        f.work.path().join("knowledge/local.md"),
+        "---\ntype: Note\n---\nBody\n",
+    )
+    .unwrap();
+    let response = value(&f.run(&["validate", "book"]));
+    assert_eq!(response["data"]["link_check"]["external_links"], 2);
+}
