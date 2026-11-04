@@ -297,6 +297,26 @@ Windows 使用 `target/release/okf.exe`。输出目录必须不存在。脚本�
 
 ## 最近验证
 
+### 2026-11-04：候选交集顺序与文档物化预算
+
+`candidates-v1` 原先按三元组的字典序读取倒排表，并把 `--candidate-budget` 全部用于求交。当查询同时包含宽泛词元与选择性词元时，宽泛词元先耗尽预算，文档物化阶段读到 `rows_read == row_limit` 立即退出，返回零条目并标记不完整；全量扫描在同一语料上能返回全部命中。改动按倒排表长度升序求交，并为文档物化保留 `row_limit/16`（上限 1024 行）的行预算。
+
+Windows MSVC Release 构建，301 份合成文档（`consistency` 覆盖全部文档，`throughput` 覆盖七分之一），`--max-scan 20000`、默认条目与正文预算：
+
+| 查询 | 候选预算 | 改动前条目 / 行读取 | 改动后条目 / 行读取 |
+| --- | --- | --- | --- |
+| `throughput consistency` | 500 | 0 / 500 | 18 / 487 |
+| `throughput consistency` | 2000 | 0 / 2000 | 5 / 1880 |
+| `throughput consistency` | 3000 | 0 / 3000 | 10 / 2823 |
+| `throughput consistency` | 4000 | 20 / 3087，总数 43 | 20 / 3087，总数 43 |
+| `consistency` | 500 | 0 / 500 | 20 / 500 |
+| `consistency` | 2000 | 0 / 2000 | 20 / 1950 |
+| `consistency` | 3000 | 20 / 3000，总数 300 | 20 / 3000，总数 300 |
+
+预算足够读完所有倒排表时，改动前后的 `items` 与 `page.total` 逐字段相同，全量扫描、改动前后候选三者一致。截断时条目数不随预算单调增加，原因与 [有限预算与不均衡知识包](#有限预算与不均衡知识包) 记录的路径前缀配额相同；两种情况下返回条目都属于完整答案的子集，并且都报告 `CANDIDATE_LIMIT` 与未知总数。
+
+`cargo test --workspace --all-targets --locked` 123 项通过，`clippy -D warnings` 与 `fmt --check` 通过；新增 `crates/okf-adapters/tests/retrieval_parity.rs` 四项，其中「宽泛词元不占满物化预算」在改动前的实现上失败。本轮未运行 `scripts/evaluate_index_candidates.py`：本机无法访问 PyPI，`scripts/requirements-test.txt` 的依赖未安装，发布前需补跑该入口。
+
 ### 2026-11-03：冗余清理回归
 
 合并标量筛选条件、Skill 文件清单及归档校验逻辑，压缩重复设计说明和专项流水。Windows GNU 全工作区 Debug 119 项、Clippy、fmt、Release 构建、21 项 Python 辅助测试、32 组候选检索对照及解压包 65 份文档/184 次 CLI 调用通过；归档重复条目与校验文件名拒绝新增普通、`-O` 双模式检查。文档本地链接/锚点检查通过。日志与源码哈希见 `target/verification/cleanup-20261103/`；本轮未重跑 Release 单元测试、HTTPS/LFS、跨平台或模型评测。

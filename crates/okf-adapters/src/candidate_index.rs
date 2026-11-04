@@ -6,6 +6,16 @@ use okf_application::{
 use okf_core::Document;
 use std::collections::BTreeSet;
 
+/// Upper bound on the rows counted per gram when ordering the intersection.
+/// Counts at or above this value are treated as equal, so a broad gram costs a
+/// bounded probe instead of a full scan before every query.
+const ORDER_PROBE_ROWS: usize = 64;
+
+/// Ceiling on the rows withheld from the intersection for document
+/// materialization. Above this size the share stops growing, so a large budget
+/// is not restricted by a reservation it does not need.
+const MAX_RESERVED_ROWS: usize = 1024;
+
 pub(super) const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS candidate_snapshots(bundle TEXT PRIMARY KEY,generation TEXT NOT NULL,version INTEGER NOT NULL,documents INTEGER NOT NULL,postings INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS candidate_documents(bundle TEXT NOT NULL,path TEXT NOT NULL,hash TEXT NOT NULL,metadata TEXT NOT NULL,metadata_hash TEXT NOT NULL,fallback INTEGER NOT NULL,PRIMARY KEY(bundle,path));
@@ -163,6 +173,39 @@ pub(super) fn verify_document(
     Ok(())
 }
 
+/// Orders grams by posting-list size so the intersection narrows before broad
+/// grams are read. Counting stops at a probe cap, which bounds the ordering
+/// cost and treats every list at or above the cap as equal; gram order then
+/// decides, so the selected documents stay deterministic.
+fn order_by_postings(
+    tx: &Transaction<'_>,
+    key: &str,
+    tokens: &BTreeSet<String>,
+    lower: &str,
+    upper: Option<&str>,
+    limit: usize,
+) -> Result<Vec<String>> {
+    if tokens.len() < 2 || limit == 0 {
+        return Ok(tokens.iter().cloned().collect());
+    }
+    let cap = limit.min(ORDER_PROBE_ROWS) as i64;
+    let mut statement = tx
+        .prepare("SELECT COUNT(*) FROM (SELECT 1 FROM candidate_postings WHERE bundle=?1 AND gram=?2 AND path>=?3 AND (?4 IS NULL OR path<?4) LIMIT ?5)")
+        .map_err(Error::io)?;
+    let mut ordered = vec![];
+    for token in tokens {
+        let count: i64 = statement
+            .query_row(params![key, token, lower, upper, cap], |row| row.get(0))
+            .map_err(Error::io)?;
+        ordered.push((count, token));
+    }
+    ordered.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(b.1)));
+    Ok(ordered
+        .into_iter()
+        .map(|(_, token)| token.clone())
+        .collect())
+}
+
 pub(super) fn select(
     index: &SqliteIndex,
     key: &str,
@@ -198,10 +241,17 @@ pub(super) fn select(
     let mut rows_read = 0;
     let mut complete = true;
     let tokens: BTreeSet<_> = request.terms.iter().flat_map(|t| trigrams(t)).collect();
+    // Keep part of the budget for materializing documents. Without it a query
+    // whose postings fill the budget cannot load a single document, turning a
+    // partial answer into none. The share is small enough that a budget which
+    // was sufficient for the postings alone still completes.
+    let reserve = (request.row_limit / 16).min(MAX_RESERVED_ROWS);
+    let postings_limit = request.row_limit - reserve;
+    let ordered = order_by_postings(&tx, key, &tokens, &lower, upper.as_deref(), postings_limit)?;
     let mut paths: Option<BTreeSet<String>> = None;
-    for token in &tokens {
+    for token in &ordered {
         request.control.check()?;
-        let remaining = request.row_limit.saturating_sub(rows_read);
+        let remaining = postings_limit.saturating_sub(rows_read);
         if remaining == 0 {
             complete = false;
             break;
