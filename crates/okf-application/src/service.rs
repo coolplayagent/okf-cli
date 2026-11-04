@@ -480,6 +480,7 @@ impl App<'_> {
         let mut matches = vec![];
         let mut scan = ScanBudget::new(options.max_scan, self.control);
         let mut match_count = 0;
+        let mut all_evaluated = true;
         for binding in &bindings {
             let mut queue = VecDeque::from([directory.to_owned()]);
             let mut seen = BTreeSet::new();
@@ -575,6 +576,7 @@ impl App<'_> {
             } else {
                 response.unavailable(binding, directory);
             }
+            all_evaluated &= complete && observed;
         }
         matches.sort_by(|a, b| a["ref"].as_str().cmp(&b["ref"].as_str()));
         let total = match_count;
@@ -591,7 +593,7 @@ impl App<'_> {
             items.push(card);
         }
         response.page["returned"] = json!(items.len());
-        if response.status == "ok" {
+        if all_evaluated {
             response.page["total"] = json!(total);
         }
         response.data["items"] = json!(items);

@@ -340,6 +340,7 @@ fn cache_failure_preserves_all_cards_and_raw_document() {
     assert_eq!(response.exit_code, 7);
     assert_eq!(response.data["items"].as_array().unwrap().len(), 2);
     assert_eq!(response.bundles[0]["coverage"]["metadata"], "complete");
+    assert_eq!(response.page["total"], 2);
     assert!(response
         .diagnostics
         .iter()

@@ -401,9 +401,28 @@ fn metadata_search_reports_incomplete_coverage() {
         value(&result)["bundles"][0]["coverage"]["metadata"],
         "partial"
     );
+    assert!(value(&result)["page"]["total"].is_null());
     let result = f.run(&["search", "登录"]);
     assert_eq!(result.status.code(), Some(0));
     assert_eq!(value(&result)["data"]["items"][0]["title"], "登录服务");
+}
+
+#[test]
+fn live_search_reports_total_when_evaluation_is_complete() {
+    let f = Fixture::new();
+    f.bind();
+    let out = f.run(&["search", "Service", "--limit", "1"]);
+    assert_eq!(out.status.code(), Some(7));
+    let response = value(&out);
+    assert_eq!(response["status"], "partial");
+    assert_eq!(response["page"]["returned"], 1);
+    assert_eq!(response["page"]["total"], 2);
+    assert_eq!(response["bundles"][0]["coverage"]["metadata"], "complete");
+    assert!(response["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"] == "RESULT_LIMIT"));
 }
 
 #[test]

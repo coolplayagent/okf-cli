@@ -208,7 +208,7 @@ fetch 后根据主仓库 `.gitmodules` 和 gitlink 获取直接子模块对象�
 
 存在候选清单时，还检查其版本、generation、行数，并在逐文档检查时从原文重算元数据与三元组；差异报告 `INDEX_CANDIDATES_CORRUPT`。即使正文扫描不完整，已发现清单失效时 `valid` 也为 false。旧库没有候选清单时只验证正文，不能据此推断候选查询可用。`sync` 同时修复正文与派生数据，失败或取消回滚整个发布事务。
 
-完整且无问题返回 0，完整且发现损坏返回 5；扫描、64 MiB 检查预算或截止时间耗尽、取消时返回 7，保留已完成的检查结果，即使已发现损坏。单份正文超过 2 MiB 时报告 `INDEX_DOCUMENT_LIMIT`。其他完整性诊断包括 `INDEX_PATH_INVALID`、`INDEX_CORRUPT`、`INDEX_GENERATION_MISMATCH` 和 `INDEX_SNAPSHOT_MISMATCH`。缺失索引返回 3，且不创建正文数据库；不支持的数据库版本返回 `INDEX_VERSION`（2），不执行迁移。检查不会修复内容；显式 `sync` 在事务内重建该包的完整文档清单，包括移除多余记录。
+完整且无问题返回 0，完整且发现损坏返回 5（与[退出码](#退出码)表中 5 的含义一致）；扫描、64 MiB 检查预算或截止时间耗尽、取消时返回 7，保留已完成的检查结果，即使已发现损坏。单份正文超过 2 MiB 时报告 `INDEX_DOCUMENT_LIMIT`。其他完整性诊断包括 `INDEX_PATH_INVALID`、`INDEX_CORRUPT`、`INDEX_GENERATION_MISMATCH` 和 `INDEX_SNAPSHOT_MISMATCH`。缺失索引返回 3，且不创建正文数据库；不支持的数据库版本返回 `INDEX_VERSION`（2），不执行迁移。检查不会修复内容；显式 `sync` 在事务内重建该包的完整文档清单，包括移除多余记录。
 
 `budget.scan_limit` 和 `indexed_documents_scanned` 记录文档扫描上限及实际数量，`index_bytes_limit` 和 `index_bytes_checked` 记录正文检查的累计字节上限及计数。`data.live_files_checked` 固定为 false。
 
@@ -278,11 +278,11 @@ fetch 后根据主仓库 `.gitmodules` 和 gitlink 获取直接子模块对象�
 | 2 | 参数、配置、知识包歧义或不支持的能力 |
 | 3 | 知识包、目录或文件不存在 |
 | 4 | 访问被拒绝、路径越界或目录链接被拒绝 |
-| 5 | I/O、缓存或配置锁错误 |
+| 5 | I/O、缓存或配置锁错误，以及 `index verify` 完整检查发现的索引完整性损坏 |
 | 6 | 读取期间内容变化、分页修订变化或索引发布版本冲突 |
-| 7 | 部分结果、资源超限、截止时间或取消 |
+| 7 | 部分结果、资源超限、截止时间或取消；也可能是这些上限导致的零结果错误响应（`status: error`，无可用结果） |
 
-完整合规检查发现错误时为 `status: error`、退出码 1，缓存不可用诊断不会覆盖这个结果；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。文件过大和输出超限也使用退出码 7，但响应为 `error`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
+完整合规检查发现错误时为 `status: error`、退出码 1，缓存不可用诊断不会覆盖这个结果；校验扫描未完成时为 `partial`、退出码 7，结果中仍保留已发现的错误。`index verify` 完整检查发现损坏时返回退出码 5（见[索引完整性检查](#索引完整性检查)），与表中 5 的含义一致。单文件过大（`DOCUMENT_TOO_LARGE`）、输出超限（`OUTPUT_TOO_LARGE`）、带 cursor 的浏览无法在扫描预算内重建完整清单（`SCAN_LIMIT`）、`LFS_CONTENT_UNAVAILABLE` 等资源或上限类故障也使用退出码 7，但响应为 `status: error` 且不含任何可用结果。因此退出码 7 不能单独当作“有部分结果可用”的依据，必须同时读取 `status` 与 `data.error.code`。非法 cursor 使用退出码 2，修订变化使用退出码 6。
 
 `validate` 返回 `data.failures` 与 `data.warnings`，分别统计失败文件与返回的元数据、正文及资源警告。未启用质量门槛时，只有警告且检查完成仍为 `ok`、退出码 0。
 
