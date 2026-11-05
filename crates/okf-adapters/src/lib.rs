@@ -4,7 +4,7 @@ mod git;
 mod index;
 pub use index::SqliteIndex;
 mod sqlite;
-pub use config::{default_home, ConfigRegistry};
+pub use config::{default_home, display_path, ConfigRegistry};
 pub use filesystem::Filesystem;
 pub use git::{Git, GitCacheLock, Readers};
 pub use sqlite::SqliteCache;

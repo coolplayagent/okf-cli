@@ -33,6 +33,22 @@ pub fn default_home() -> Result<PathBuf> {
         })
 }
 
+/// Drop the Windows verbatim prefix from a local drive path when the result
+/// stays short enough to remain valid without it. Other paths are unchanged.
+pub fn display_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix("\\\\?\\") {
+            let is_drive = rest.as_bytes().get(1) == Some(&b':');
+            if is_drive && rest.len() < 240 {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
 pub struct ConfigRegistry {
     pub home: PathBuf,
     pub project: PathBuf,

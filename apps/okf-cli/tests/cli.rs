@@ -310,6 +310,44 @@ fn build_info_does_not_open_runtime_state() {
     assert!(info["target"].as_str().unwrap().contains('-'));
 }
 
+#[cfg(windows)]
+#[test]
+fn windows_bundle_roots_hide_the_verbatim_prefix() {
+    const VERBATIM: &str = "\\\\?\\";
+    let f = Fixture::new();
+    f.bind();
+    let listed = value(&f.run(&["bundle", "list"]));
+    let root = listed["data"]["items"][0]["root"].as_str().unwrap();
+    assert!(!root.starts_with(VERBATIM), "{root}");
+
+    let out = f.run(&[
+        "--scope",
+        "user",
+        "bundle",
+        "add",
+        "ubook",
+        "--path",
+        "knowledge",
+    ]);
+    assert_eq!(out.status.code(), Some(0));
+    let added = value(&out)["data"]["bundle"]["root"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(!added.starts_with(VERBATIM), "{added}");
+    let shown = value(&f.run(&["--scope", "user", "bundle", "show", "ubook"]));
+    assert!(!shown["data"]["bundle"]["root"]
+        .as_str()
+        .unwrap()
+        .starts_with(VERBATIM));
+
+    let doctor = value(&f.run(&["doctor"]));
+    assert!(!doctor["data"]["project"]
+        .as_str()
+        .unwrap()
+        .starts_with(VERBATIM));
+}
+
 #[test]
 fn invalid_aliases_are_rejected_before_binding() {
     let f = Fixture::new();

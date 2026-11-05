@@ -272,6 +272,8 @@ Schema 只检查字段结构，不能比较字节区间端点、证明引用目�
 
 文件系统读取视图为 `observed`，上游修订为 null；Git 视图为 `snapshot`，`upstream_revision` 是完整 commit ID。Git 原文、卡片与 cursor 均携带或绑定提交。`metadata` 覆盖状态必须结合 `coverage.scope` 解读：单文件、单目录与全知识包扫描不是同一范围。实时命令的 `body`、`graph` 是保守覆盖声明；索引的完整正文覆盖仅描述已发布的索引版本。
 
+Windows 上响应中的绝对路径使用普通盘符形式，不包含 `\\?\` 逐字前缀；超过 240 字符的路径保留前缀以支持长路径。绑定的存储形式不因此改变。
+
 `page.total` 可以为 null；`has_more=false` 只说明该操作没有续页，不证明全库扫描完整。卡片返回也不意味着 Agent 已读取正文。
 
 `diagnostics[].severity` 为 `error` 或 `warning`。元数据及正文警告的 `path` 为完整文件引用，如 `@handbook/services/auth.md`；元数据的 `field` 为 frontmatter 的 JSON Pointer，如 `/verified/0/at`。正文、操作或文档级诊断的 `field` 为 null，包括截断提示。默认情况下，警告不改变执行状态或元数据覆盖；显式启用质量门槛时按下文规则判定退出码。诊断条数规则见 [诊断上限](#诊断上限)。
