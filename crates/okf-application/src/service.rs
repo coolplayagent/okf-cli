@@ -387,6 +387,15 @@ impl App<'_> {
                 Err(e) => return Err(e),
             }
         } else {
+            match validate_reserved(&path, &raw) {
+                Ok(()) => {}
+                Err(e) if raw_mode => {
+                    response
+                        .diagnostics
+                        .push(Diagnostic::new(&e.code, e.message, Some(&path)))
+                }
+                Err(e) => return Err(e),
+            }
             response
                 .diagnostics
                 .extend(self.markdown(&binding, &path, &raw, None).diagnostics);

@@ -452,6 +452,55 @@ fn malformed_concept_is_diagnosed_and_requires_raw_read() {
 }
 
 #[test]
+fn read_validates_reserved_files_and_raw_keeps_original() {
+    let f = Fixture::new();
+    f.bind();
+    fs::write(
+        f.work.path().join("knowledge/log.md"),
+        "# 变更日志\n\n## 2026/10/22\n\n* 坏日期。\n",
+    )
+    .unwrap();
+    fs::write(
+        f.work.path().join("knowledge/services/index.md"),
+        "---\ntitle: 子目录索引不该有 frontmatter\n---\n\n# 服务\n",
+    )
+    .unwrap();
+
+    let strict = f.run(&["read", "@book/log"]);
+    assert_eq!(strict.status.code(), Some(1));
+    assert_eq!(value(&strict)["data"]["error"]["code"], "INVALID_OKF");
+
+    let raw = f.run(&["read", "@book/log", "--raw"]);
+    assert_eq!(raw.status.code(), Some(0));
+    let raw = value(&raw);
+    assert_eq!(raw["status"], "ok");
+    assert_eq!(raw["diagnostics"][0]["code"], "INVALID_OKF");
+    assert_eq!(raw["diagnostics"][0]["severity"], "error");
+    assert!(raw["data"]["document"]["text"]
+        .as_str()
+        .unwrap()
+        .contains("2026/10/22"));
+
+    assert_eq!(
+        f.run(&["read", "@book/services/index"]).status.code(),
+        Some(1)
+    );
+    let nested = value(&f.run(&["read", "@book/services/index", "--raw"]));
+    assert_eq!(nested["status"], "ok");
+    assert_eq!(nested["diagnostics"][0]["code"], "INVALID_OKF");
+    assert!(nested["data"]["document"]["text"].as_str().is_some());
+
+    let valid = value(&f.run(&["read", "@book/index"]));
+    assert_eq!(valid["status"], "ok");
+    assert!(valid["data"]["document"]["text"].as_str().is_some());
+    assert!(!valid["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["severity"] == "error"));
+}
+
+#[test]
 fn remove_preserves_bundle_and_cli_rejects_unimplemented_adapters() {
     let f = Fixture::new();
     f.bind();

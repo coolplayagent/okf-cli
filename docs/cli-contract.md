@@ -76,9 +76,9 @@
 
 `browse @handbook` 展开知识包根目录，`browse @handbook/services` 展开子目录。`read @handbook/services/auth` 读取 `services/auth.md`，也可以传入完整文件名。以 `.md` 结尾的读取引用按完整文件名处理。
 
-`browse` 的目录索引使用 `index.origin` 区分 `authored` 与 `synthesized`；目录未完整列举且尚未发现索引时为 `unknown`。作者索引通过 `index.ref` 单独读取，不嵌入目录结果。`index.md` 与 `log.md` 可直接传给 `read`。
+`browse` 的目录索引使用 `index.origin` 区分 `authored` 与 `synthesized`；目录未完整列举且尚未发现索引时为 `unknown`。作者索引通过 `index.ref` 单独读取，不嵌入目录结果。`index.md` 与 `log.md` 可直接传给 `read`；`read` 对这些保留文件执行与 `sync`、`validate` 相同的结构校验，失败时返回 `INVALID_OKF`、退出码 1。
 
-普通概念的 frontmatter 必须包含非空字符串 `type`。`read --raw` 可查看不合规 Markdown，并附解析诊断；无效 UTF-8 和大小限制仍会阻止读取。`validate` 还检查根索引 frontmatter 的允许字段、子目录索引限制及日志日期标题。
+普通概念的 frontmatter 必须包含非空字符串 `type`。`read --raw` 可查看不合规 Markdown 与不合规保留文件，返回原文并附结构错误诊断；不带 `--raw` 时结构错误返回 `INVALID_OKF`、退出码 1。无效 UTF-8 和大小限制仍会阻止读取。`read`、`sync` 与 `validate` 共用根索引 frontmatter 允许字段、子目录索引限制及日志日期标题的校验规则。
 
 结构、元数据与正文诊断规则见 [OKF 检查矩阵](#okf-检查矩阵)。质量警告保留概念与原文；缺少可选字段、未知类型或扩展字段不触发警告。
 

@@ -1,5 +1,24 @@
 # 变更记录
 
+## 未发布 — 2026-11-05
+
+### 修复与文档
+
+- `read` 对 `index.md`、`log.md` 等保留文件执行与 `sync`、`validate` 一致的结构校验：不带 `--raw` 时结构违规返回 `INVALID_OKF`、退出码 1；带 `--raw` 时仍返回原文并附 error 级诊断，保留排查破损保留文件的能力。概念文件、合规保留文件、`browse`、`search`、`sync`、`validate` 与 `read --indexed` 行为不变，原文读取、哈希与分页不受影响。
+- 同步更新 CLI 契约、Agent Skill 命令参考、错误码表与回归用例；新增严格模式与 `--raw` 两路回归用例，锁定 `read` 与 `sync`/`validate` 的结论一致性以及 `--raw` 的原文可用性。
+- 实时元数据搜索（`search` 不带 `--full-text`，以及 `context --query`）的 `page.total` 改按「所选范围内是否完成评估」判定，不再依赖 `response.status == "ok"`（提交 `cc3c440`）。评估完整但结果被 `--limit` 或条目字节预算截断（`RESULT_LIMIT`）、或缓存写失败（`CACHE_WRITE_FAILED`）时返回完整命中总数；扫描预算耗尽、读取失败或取消导致评估不完整时仍为 `null`。该字段与全文索引路径语义统一，`null` 继续只表示命中总数未知，不等于 0。
+- 澄清退出码 5 与 7 的适用范围：完整 `index verify` 发现索引完整性损坏返回 5；退出码 7 也可能是零结果的 `status: error` 响应（`OUTPUT_TOO_LARGE`、`SCAN_LIMIT`、`DOCUMENT_TOO_LARGE`、`LFS_CONTENT_UNAVAILABLE` 等），不能单独当作有部分结果可用的依据，需同时读取 `status` 与 `data.error.code`；[CLI 契约](docs/cli-contract.md) 与 Agent Skill 命令参考已同步。
+
+### 升级注意事项
+
+- **响应行为变化，需通知所有下游消费方**（针对 `page.total` 判定变更）：实时 `search` 在 `status: partial`、退出码 7 时，`page.total` 可能由 `null` 变为整数；`status`、`exit_code`、`diagnostics`、`bundles[].coverage`、`page.returned` 均不变，`RESULT_LIMIT` / `CACHE_WRITE_FAILED` 的诊断代码、严重级别与缓存故障降级策略也不变。
+- 消费方不得假设「`partial` 必然 `total: null`」或「`total: null` 即无命中」；判断覆盖完整性读 `page.total` 与 `bundles[].coverage`，判断有无可用结果读 `status` 与 `data.error.code`。
+- **`read` 对违规保留文件的行为变化**：不带 `--raw` 读结构不合规的 `index.md` / `log.md` 现返回 `INVALID_OKF`、退出码 1（此前为退出码 0 且零诊断）。需要查看原文的调用方改用 `read --raw`，该模式仍返回完整原文并附 `INVALID_OKF` error 级诊断；合规保留文件、概念文件与 `read --indexed` 的响应不变。
+- 无数据库或索引格式变更，`content.sqlite` / `index.sqlite` 兼容，升级后不需要重新 `sync`，无需迁移配置或重建绑定。
+- 已知边界：`CARD_TOO_LARGE` 导致卡片无法装入结果时，实时路径仍返回 `total: null`、索引路径仍给出总数；该场景尚未统一，留待后续单独处理。
+- 验证：`cargo fmt --check`、`cargo clippy --all-targets -- -D warnings`、application 单测 9/9、CLI 集成测试 49/49、全量回归 72/72（`--strict`）。回归库用例 `a3-total-live-null` 已由缺陷锁定改为行为锁定（`page.total: 120`）；回归库位于工作区 `okf-regress/`，不在本仓库内。
+- 2026-11-05 对 C3 修复复验：`cargo fmt --check` 通过、`cargo test --workspace` 全绿、CLI 集成测试 50/50、`--only a8 --strict` 5/5；全量回归 69 pass / 0 fail / 0 fixed / 5 skipped（跨版本用例因未设 `OKF_BASELINE_BIN` 跳过）。
+
 ## 0.2.0 — 2026-11-04
 
 新增 Git 远端与内容读取能力，修复缓存完整性与检索一致性问题。发行包含 Windows x64 MSVC、Linux x64 GNU、macOS ARM64 CLI 包，以及内含三平台二进制的独立 Agent Skill 包。
