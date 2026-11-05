@@ -231,3 +231,26 @@ impl Drop for ConfigLock {
         let _ = self.0.set_len(0);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_path_keeps_plain_paths() {
+        assert_eq!(display_path(Path::new("knowledge")), Path::new("knowledge"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_strips_short_drive_paths_only() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\C:\work\kb")),
+            Path::new(r"C:\work\kb")
+        );
+        let unc = Path::new(r"\\?\UNC\server\share");
+        assert_eq!(display_path(unc), unc);
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(display_path(Path::new(&long)), Path::new(&long));
+    }
+}
