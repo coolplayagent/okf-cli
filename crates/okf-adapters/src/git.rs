@@ -395,14 +395,13 @@ fn validate_object_metadata(metadata: std::fs::Metadata) -> Result<std::fs::Meta
 
 fn check_storage(root: &Path, limit: u64, control: &RequestControl) -> Result<u64> {
     let mut pending = vec![root.join("objects")];
-    // LFS objects live outside the Git object store; include them so the
-    // storage budget covers the whole managed repository. A fresh repository
-    // has no LFS store, so missing directories are skipped (never treated as
-    // an error) and symbolic links are not followed.
-    for extra in [
-        root.join("lfs").join("objects"),
-        root.join(".git").join("lfs").join("objects"),
-    ] {
+    // LFS objects live outside the Git object store; include the whole LFS tree
+    // so the storage budget also covers `lfs/incomplete` and `lfs/tmp`, where a
+    // running transfer streams object bodies before they are renamed into
+    // `lfs/objects`. A fresh repository has no LFS store, so missing directories
+    // are skipped (never treated as an error) and symbolic links are not
+    // followed.
+    for extra in [root.join("lfs"), root.join(".git").join("lfs")] {
         if extra
             .symlink_metadata()
             .map(|m| m.is_dir())
@@ -450,6 +449,28 @@ fn check_storage(root: &Path, limit: u64, control: &RequestControl) -> Result<u6
         }
     }
     Ok(bytes)
+}
+
+/// Remove Git LFS transfer scratch state. `lfs/incomplete` and `lfs/tmp` hold
+/// partial object bodies that never become final content, but a cancelled or
+/// killed transfer leaves them behind and `check_storage` counts them, so a
+/// stale scratch file could keep the cache permanently over budget. Symbolic
+/// links are never followed or removed.
+fn clean_lfs_scratch(root: &Path) {
+    for base in [root.join("lfs"), root.join(".git").join("lfs")] {
+        for name in ["incomplete", "tmp"] {
+            let directory = base.join(name);
+            if directory
+                .symlink_metadata()
+                .map(|metadata| metadata.is_dir())
+                .unwrap_or(false)
+            {
+                // Best-effort: the next fetch retries, and the final storage
+                // check still fails closed if anything remains.
+                let _ = std::fs::remove_dir_all(&directory);
+            }
+        }
+    }
 }
 
 fn git_lfs_available() -> bool {
@@ -819,17 +840,25 @@ impl Git {
         control: &RequestControl,
         max_bytes: u64,
     ) -> Result<()> {
+        // Discard partial bodies left by an earlier cancelled or killed
+        // transfer before the quota pre-check, so stale scratch files cannot
+        // keep the cache permanently over budget.
+        clean_lfs_scratch(root);
         if !git_lfs_available() {
             return Ok(());
         }
-        optional_fetch(run_bounded(
+        let result = run_bounded(
             root,
             &["lfs", "fetch", remote, destination],
             65536,
             control,
             Some(max_bytes),
             None,
-        ))?;
+        );
+        // A transfer stopped on quota, cancellation or timeout leaves its
+        // partial body in `lfs/incomplete`; remove it before reporting the error.
+        clean_lfs_scratch(root);
+        optional_fetch(result)?;
         check_storage(root, max_bytes, control)?;
         Ok(())
     }
@@ -1596,6 +1625,38 @@ mod tests {
                 "LFS_INTEGRITY_ERROR"
             );
         }
+    }
+
+    #[test]
+    fn storage_budget_counts_lfs_scratch_and_cleanup_removes_it() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("objects")).unwrap();
+        let control =
+            RequestControl::new(Duration::from_secs(10), Arc::new(AtomicBool::new(false)));
+        assert_eq!(check_storage(root.path(), 1024, &control).unwrap(), 0);
+
+        // Bodies streamed into `lfs/incomplete` count against the same budget as
+        // final objects, so a transfer cannot exceed `--max-git-bytes` through
+        // its scratch area.
+        let incomplete = root.path().join("lfs/incomplete/ab");
+        let temporary = root.path().join(".git/lfs/tmp");
+        std::fs::create_dir_all(&incomplete).unwrap();
+        std::fs::create_dir_all(&temporary).unwrap();
+        std::fs::write(incomplete.join("partial"), vec![0u8; 2048]).unwrap();
+        std::fs::write(temporary.join("partial"), vec![0u8; 1024]).unwrap();
+        assert_eq!(
+            check_storage(root.path(), u64::MAX, &control).unwrap(),
+            3072
+        );
+        assert_eq!(
+            check_storage(root.path(), 2048, &control).unwrap_err().code,
+            "GIT_STORAGE_LIMIT"
+        );
+
+        clean_lfs_scratch(root.path());
+        assert!(!root.path().join("lfs/incomplete").exists());
+        assert!(!root.path().join(".git/lfs/tmp").exists());
+        assert_eq!(check_storage(root.path(), 1024, &control).unwrap(), 0);
     }
 
     #[test]
