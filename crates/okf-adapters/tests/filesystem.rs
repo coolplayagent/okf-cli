@@ -198,6 +198,47 @@ fn resource_metadata_distinguishes_missing_files_and_directories_without_reading
 }
 
 #[test]
+fn reading_a_directory_reports_not_a_file_on_every_platform() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir(root.path().join("services")).unwrap();
+    fs::write(
+        root.path().join("services/auth.md"),
+        "---\ntype: Note\n---\nbody",
+    )
+    .unwrap();
+    let b = binding(root.path());
+    let error = Filesystem
+        .read(&b, "services", 4096, &control())
+        .unwrap_err();
+    // Agents branch on the code, so a directory must not look like a missing
+    // file and the message must not carry localized operating-system text.
+    assert_eq!(error.code, "NOT_A_FILE");
+    assert_eq!(error.message, "requested path is not a regular file");
+}
+
+#[test]
+fn filesystem_messages_do_not_depend_on_the_system_language() {
+    let root = tempfile::tempdir().unwrap();
+    let b = binding(root.path());
+    let error = Filesystem
+        .read(&b, "absent.md", 4096, &control())
+        .unwrap_err();
+    assert_eq!(error.code, "NOT_FOUND");
+    // A localized operating-system message would be non-ASCII on a zh-CN host
+    // and English elsewhere, so the same request would answer differently.
+    assert!(
+        error.message.is_ascii(),
+        "localized operating-system text leaked into the response: {}",
+        error.message
+    );
+    assert!(
+        error.message.starts_with("path does not exist"),
+        "unexpected message: {}",
+        error.message
+    );
+}
+
+#[test]
 fn cache_reset_preserves_corrupt_bytes_and_refuses_active_consumers() {
     let home = tempfile::tempdir().unwrap();
     let path = home.path().join("index.sqlite");

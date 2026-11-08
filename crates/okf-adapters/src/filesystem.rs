@@ -193,8 +193,11 @@ impl BundleReader for Filesystem {
         control.check()?;
         let root = Self::root(binding)?;
         let actual = Self::contained(&root, path)?;
-        let mut file = fs::File::open(&actual).map_err(map_io)?;
-        let before = file.metadata().map_err(map_io)?;
+        // Classify from the path before opening it. On Windows `File::open`
+        // fails for a directory first, so the platform decided between
+        // NOT_FOUND and NOT_A_FILE and the same input could report a different
+        // code per platform. `stat` already separates directories this way.
+        let before = fs::metadata(&actual).map_err(map_io)?;
         if !before.is_file() {
             return Err(Error::new(
                 "NOT_A_FILE",
@@ -202,6 +205,7 @@ impl BundleReader for Filesystem {
                 3,
             ));
         }
+        let mut file = fs::File::open(&actual).map_err(map_io)?;
         if before.len() > max_bytes as u64 {
             return Err(Error::new(
                 "DOCUMENT_TOO_LARGE",
@@ -241,10 +245,27 @@ impl BundleReader for Filesystem {
 }
 
 fn map_io(e: std::io::Error) -> Error {
-    match e.kind() {
-        std::io::ErrorKind::NotFound => Error::new("NOT_FOUND", e.to_string(), 3),
-        std::io::ErrorKind::PermissionDenied => Error::new("ACCESS_DENIED", e.to_string(), 4),
-        _ => Error::io(e),
+    // `Display` for `io::Error` forwards the operating system's own message,
+    // so the same failure reads differently on a zh-CN and an en-US host and
+    // the response stops being reproducible. Derive the message from the
+    // stable error kind and the numeric OS code instead.
+    let suffix = match e.raw_os_error() {
+        Some(os) => format!(" (os error {os})"),
+        None => String::new(),
+    };
+    let kind = e.kind();
+    match kind {
+        std::io::ErrorKind::NotFound => {
+            Error::new("NOT_FOUND", format!("path does not exist{suffix}"), 3)
+        }
+        std::io::ErrorKind::PermissionDenied => {
+            Error::new("ACCESS_DENIED", format!("permission denied{suffix}"), 4)
+        }
+        _ => Error::new(
+            "IO_ERROR",
+            format!("filesystem error ({kind:?}){suffix}"),
+            5,
+        ),
     }
 }
 
