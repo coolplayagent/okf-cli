@@ -81,7 +81,7 @@ python scripts/check_delivery.py target/release/okf
 
 Windows 使用 `target/release/okf.exe`。验收范围见 [验证入口](verification.md#验证入口)，包括索引完整性与修复、有限预算评测，以及解压包的哈希、构建信息、内置 Skill 和独立运行检查。产物位于 `target/dist`，本地开发包允许记录 `source_dirty: true`。
 
-准备正式版本时，先统一 workspace 版本、Cargo.lock 与变更记录，提交到干净工作区，再创建对应 `vVERSION` tag。带 tag 验收：
+准备正式版本时，先统一 workspace 版本、Cargo.lock、`skills/okf-cli/SKILL.md` frontmatter 中的 `version` 与变更记录，提交到干净工作区，再创建对应 `vVERSION` tag。CLI 集成测试 `installed_skill_version_matches_binary` 会安装内置 Skill，核对其声明版本与 workspace 包版本、`build-info` 一致；该测试随现有三平台 CI 执行。带 tag 验收：
 
 ```sh
 cargo build --release --locked -p okf-cli

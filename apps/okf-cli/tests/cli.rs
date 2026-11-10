@@ -591,6 +591,24 @@ fn duplicate_aliases_require_scope_and_removal_preserves_other_scope() {
 }
 
 #[test]
+fn installed_skill_version_matches_binary() {
+    let f = Fixture::new();
+    let destination = f.work.path().join("skill");
+    let installed = f.run(&["skill", "install", destination.to_str().unwrap()]);
+    assert_eq!(installed.status.code(), Some(0));
+    let raw = fs::read_to_string(destination.join("SKILL.md")).unwrap();
+    let (metadata, _) = okf_core::frontmatter(&raw).unwrap();
+    assert_eq!(
+        metadata.get("version").and_then(Value::as_str),
+        Some(env!("CARGO_PKG_VERSION")),
+        "update the Skill frontmatter version when changing the workspace version"
+    );
+    let info = f.run(&["build-info"]);
+    assert_eq!(info.status.code(), Some(0));
+    assert_eq!(metadata["version"], value(&info)["data"]["version"]);
+}
+
+#[test]
 fn skill_install_preserves_existing_contents() {
     let f = Fixture::new();
     let destination = f.work.path().join("skill");
