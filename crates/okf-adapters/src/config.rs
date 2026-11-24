@@ -33,6 +33,22 @@ pub fn default_home() -> Result<PathBuf> {
         })
 }
 
+/// Drop the Windows verbatim prefix from a local drive path when the result
+/// stays short enough to remain valid without it. Other paths are unchanged.
+pub fn display_path(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let text = path.to_string_lossy();
+        if let Some(rest) = text.strip_prefix("\\\\?\\") {
+            let is_drive = rest.as_bytes().get(1) == Some(&b':');
+            if is_drive && rest.len() < 240 {
+                return PathBuf::from(rest);
+            }
+        }
+    }
+    path.to_path_buf()
+}
+
 pub struct ConfigRegistry {
     pub home: PathBuf,
     pub project: PathBuf,
@@ -213,5 +229,28 @@ struct ConfigLock(fs::File);
 impl Drop for ConfigLock {
     fn drop(&mut self) {
         let _ = self.0.set_len(0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn display_path_keeps_plain_paths() {
+        assert_eq!(display_path(Path::new("knowledge")), Path::new("knowledge"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn display_path_strips_short_drive_paths_only() {
+        assert_eq!(
+            display_path(Path::new(r"\\?\C:\work\kb")),
+            Path::new(r"C:\work\kb")
+        );
+        let unc = Path::new(r"\\?\UNC\server\share");
+        assert_eq!(display_path(unc), unc);
+        let long = format!(r"\\?\C:\{}", "a".repeat(300));
+        assert_eq!(display_path(Path::new(&long)), Path::new(&long));
     }
 }

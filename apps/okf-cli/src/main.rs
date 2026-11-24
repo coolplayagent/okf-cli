@@ -1,5 +1,7 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use okf_adapters::{default_home, ConfigRegistry, Git, Readers, SqliteCache, SqliteIndex};
+use okf_adapters::{
+    default_home, display_path, ConfigRegistry, Git, Readers, SqliteCache, SqliteIndex,
+};
 use okf_application::{
     App, BundleBinding, BundleReader, BundleRegistry, Cache, CredentialRef, Index, ReadOptions,
     RequestControl, Response, UnavailableCache,
@@ -8,7 +10,7 @@ use okf_core::{sha256, Diagnostic, Error, Result};
 use serde_json::json;
 use std::{
     io::Write,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -16,6 +18,16 @@ use std::{
     },
     time::Duration,
 };
+
+/// Windows canonical paths carry the `\\?\` verbatim prefix. JSON responses
+/// expose the plain drive form when it stays valid without the prefix; stored
+/// bindings keep the canonical form.
+fn display_binding(mut binding: BundleBinding) -> BundleBinding {
+    binding.root = display_path(Path::new(&binding.root))
+        .to_string_lossy()
+        .into_owned();
+    binding
+}
 
 #[derive(Parser)]
 #[command(
@@ -763,7 +775,8 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
                 }
                 reader.probe_controlled(&binding, control)?;
                 registry.add(&binding)?;
-                let mut response = Response::new("bundle add", json!({"bundle": binding}));
+                let mut response =
+                    Response::new("bundle add", json!({"bundle": display_binding(binding)}));
                 response
                     .next
                     .push(json!({"operation": "browse", "target": format!("@{name}")}));
@@ -771,11 +784,15 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
             }
             BundleCommand::List => Ok(Response::new(
                 "bundle list",
-                json!({"items": registry.list()?}),
+                json!({"items": registry
+                    .list()?
+                    .into_iter()
+                    .map(display_binding)
+                    .collect::<Vec<_>>()}),
             )),
             BundleCommand::Show { name } => Ok(Response::new(
                 "bundle show",
-                json!({"bundle": app.binding(name)?}),
+                json!({"bundle": display_binding(app.binding(name)?)}),
             )),
             BundleCommand::Remove { name } => {
                 let binding = app.binding(name)?;
@@ -1046,7 +1063,7 @@ fn run(cli: &Cli, control: &RequestControl) -> Result<Response> {
         Command::Doctor => Ok(Response::new(
             "doctor",
             json!({"version": env!("CARGO_PKG_VERSION"),
-            "home": home, "project": registry.project, "bundles": registry.list()?.len(),
+            "home": home, "project": display_path(&registry.project), "bundles": registry.list()?.len(),
             "adapters": ["fs", "git"], "sqlite": "ready", "entrypoint": "cli"}),
         )),
         Command::Skill { .. } | Command::Cache { .. } | Command::BuildInfo => unreachable!(),
