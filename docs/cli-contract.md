@@ -347,7 +347,7 @@ Agent 应读取稳定的诊断 code，避免匹配错误文本；只引用实际
 | 检查对象 | 规则与规范依据 | 诊断 code | 级别 |
 | --- | --- | --- | --- |
 | 概念结构 | UTF-8、可解析的 YAML mapping、非空字符串 `type`；§4、§11 | `INVALID_OKF` | error |
-| 保留文件 | 根索引允许 `okf_version`、`title`、`description`、`license` 与扩展元数据；子目录索引和日志不带 frontmatter；日志日期标题为有效的 `YYYY-MM-DD`；§8、§9 | `INVALID_OKF` | error |
+| 保留文件 | 根索引允许 `okf_version`、`title`、`description`、`license` 与扩展元数据；子目录索引和日志不带 frontmatter；日志日期标题为有效的 `YYYY-MM-DD`，代码示例中的标题文本不作为日期检查；§8、§9 | `INVALID_OKF` | error |
 | `title`、`description`、`resource` | 出现时为字符串；§4.1 | `INVALID_METADATA_TYPE` | warning |
 | `tags` | 接受单个字符串或字符串列表，定位到无效元素；§4.1 | `INVALID_METADATA_TYPE` | warning |
 | `generated` | 出现时为对象，`by` 为非空 Actor；`at` 可省略，出现时检查时间；§5.2、§7 | 类型、必填字段、Actor 或时间诊断 | warning |

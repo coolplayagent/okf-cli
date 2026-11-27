@@ -72,6 +72,46 @@ fn value(output: &Output) -> Value {
 }
 
 #[test]
+fn log_code_examples_validate_and_sync_without_false_date_errors() {
+    for path in ["log.md", "services/log.md"] {
+        let f = Fixture::new();
+        let raw = "# Log\n## 2026-11-27\n\nDocumented a Markdown example:\n\n```markdown\n## Example heading\n```\n\n~~~markdown\n## Another example\n~~~\n";
+        let log = f.work.path().join("knowledge").join(path);
+        fs::write(&log, raw).unwrap();
+        f.bind();
+        for args in [vec!["validate", "book"], vec!["sync", "book"]] {
+            let out = f.run(&args);
+            assert_eq!(
+                out.status.code(),
+                Some(0),
+                "{path} {args:?}: {}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+        }
+        let reference = format!("@book/{path}");
+        let indexed = f.run(&["read", &reference, "--indexed"]);
+        assert_eq!(indexed.status.code(), Some(0));
+        assert_eq!(value(&indexed)["data"]["document"]["text"], raw);
+        let generation = value(&indexed)["data"]["document"]["generation"].clone();
+
+        fs::write(&log, format!("{raw}\n## yesterday\n")).unwrap();
+        let invalid = f.run(&["validate", "book"]);
+        assert_eq!(invalid.status.code(), Some(1));
+        assert!(value(&invalid)["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"] == "INVALID_OKF"));
+        let sync = f.run(&["sync", "book"]);
+        assert_ne!(sync.status.code(), Some(0));
+        assert_eq!(value(&sync)["data"]["published"], false);
+        let retained = value(&f.run(&["read", &reference, "--indexed"]));
+        assert_eq!(retained["data"]["document"]["generation"], generation);
+        assert_eq!(retained["data"]["document"]["text"], raw);
+    }
+}
+
+#[test]
 fn v03_compatibility_live_indexed_and_offline() {
     let f = Fixture::new();
     let root = f.work.path().join("knowledge");

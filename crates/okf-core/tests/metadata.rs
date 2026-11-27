@@ -69,6 +69,34 @@ fn structural_errors_remain_separate_from_optional_metadata() {
 }
 
 #[test]
+fn log_dates_ignore_literal_headings_in_code_examples() {
+    for example in [
+        "```markdown\n## Example heading\n```\n",
+        "~~~markdown\n## Example heading\n~~~\n",
+        "    ## Example heading\n",
+        "> ## Quoted heading\n",
+    ] {
+        let raw = format!("# Log\n## 2026-11-27\n\n{example}");
+        for raw in [
+            raw.clone(),
+            format!("\u{feff}{}", raw.replace('\n', "\r\n")),
+        ] {
+            for path in ["log.md", "nested/log.md"] {
+                assert!(validate_reserved(path, &raw).is_ok(), "{path}: {raw}");
+                for date in ["yesterday", "2026-02-30"] {
+                    let invalid = format!("{raw}\n## {date}\n");
+                    assert_eq!(
+                        validate_reserved(path, &invalid).unwrap_err().code,
+                        "INVALID_OKF",
+                        "{path}: {invalid}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[test]
 fn wide_integers_and_json_internal_marker_keys_preserve_yaml_values() {
     let doc = Document::parse("---\ntype: Note\ncustom:\n  $serde_json::private::Number: literal metadata\n  other: true\nlarge: 340282366920938463463374607431768211455\nnegative: -170141183460469231731687303715884105728\n---\noriginal\n").unwrap();
     assert_eq!(

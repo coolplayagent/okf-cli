@@ -1,5 +1,6 @@
 use crate::{Diagnostic, Error, Result};
 use chrono::{DateTime, FixedOffset};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag};
 use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 
@@ -515,7 +516,24 @@ pub fn validate_reserved(path: &str, raw: &str) -> Result<()> {
         }
     }
     if path.ends_with("log.md") {
-        for line in raw.lines().filter_map(|line| line.strip_prefix("## ")) {
+        // Only unindented ATX headings are log entries. In particular, literal
+        // heading text inside code examples must not be interpreted as a date.
+        let headings = Parser::new(raw)
+            .into_offset_iter()
+            .filter_map(|(event, range)| {
+                if !matches!(
+                    event,
+                    Event::Start(Tag::Heading {
+                        level: HeadingLevel::H2,
+                        ..
+                    })
+                ) || (range.start > 0 && raw.as_bytes()[range.start - 1] != b'\n')
+                {
+                    return None;
+                }
+                raw[range].lines().next()?.strip_prefix("## ")
+            });
+        for line in headings {
             let date = line.trim();
             if date.len() != 10 || chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() {
                 return Err(Error::new(
